@@ -117,7 +117,7 @@ dots-tailscale과 Tailscale 로그인 상태는 건드리지 않습니다.
 
 ## 검증한 환경
 
-2026-10-22에 Dots 클라우드 컴퓨터(Debian 13 trixie, x86_64), dots-tailscale v0.4.0(Tailscale 1.102.4), Windows 11 exit node(Tailscale 1.102.2)에서 확인했습니다. 확인한 항목과 아직 확인하지 못한 항목은 [체크리스트](docs/CHECKLIST.md)에 있습니다.
+2026-10-22에 Dots 클라우드 컴퓨터(Debian 13 trixie, x86_64)와 dots-tailscale v0.4.0(Tailscale 1.102.4)에서 확인했습니다. exit node는 Windows 11(Tailscale 1.102.2)과 OPNsense(FreeBSD 14.3, Tailscale 1.92.2) 두 가지로 확인했습니다. 확인한 항목과 아직 확인하지 못한 항목은 [체크리스트](docs/CHECKLIST.md)에 있습니다.
 
 ## 라이선스
 

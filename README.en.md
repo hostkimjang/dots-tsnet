@@ -48,7 +48,7 @@ Settings live in `/workspace/.tsnet/tsnet.conf`; the Korean README lists every k
 - Traffic goes through Tailscale DERP relays, so expect a few hundred kB/s.
 - Only programs started from the shell are affected. The browser, ChatGPT connectors and the Dots agent itself are not.
 
-Verified on 2026-10-22 on a Dots computer (Debian 13, x86_64) with dots-tailscale v0.4.0 and a Windows 11 exit node. See [docs/CHECKLIST.md](docs/CHECKLIST.md).
+Verified on 2026-10-22 on a Dots computer (Debian 13, x86_64) with dots-tailscale v0.4.0, using Windows 11 and OPNsense (FreeBSD) exit nodes. See [docs/CHECKLIST.md](docs/CHECKLIST.md).
 
 ## License
 
