@@ -1,0 +1,680 @@
+#!/usr/bin/env python3
+"""tsapt - root 권한 없이 apt 패키지를 받아 사용자 영역에 설치하는 dots-tsnet 도구.
+
+진짜 apt-get 을 별도 설정(APT_CONFIG)으로 실행해 의존성을 계산하고 내려받은 뒤,
+.deb 를 시스템 폴더 대신 $TSNET_DIR/root 에 푼다. 다운로드는 tailscaled 로컬 HTTP
+프록시를 지나 Tailscale exit node 로 나간다.
+
+apt, apt-get, apt-cache 이름(심볼릭 링크)으로 실행하면 그 명령 형식을 그대로 받는다.
+"""
+import io
+import json
+import os
+import platform
+import re
+import socket
+import subprocess
+import sys
+import tarfile
+import urllib.parse
+from pathlib import Path
+
+TSNET_DIR = Path(os.environ.get("TSNET_DIR", "/workspace/.tsnet"))
+DOC_DIR = Path(os.environ.get("TSNET_DOC_DIR", "/usr/share/doc"))
+REAL_APT_GET = os.environ.get("TSNET_REAL_APT_GET", "/usr/bin/apt-get")
+REAL_APT_CACHE = os.environ.get("TSNET_REAL_APT_CACHE", "/usr/bin/apt-cache")
+REAL_APT = os.environ.get("TSNET_REAL_APT", "/usr/bin/apt")
+
+APT = TSNET_DIR / "apt"
+ROOT = TSNET_DIR / "root"
+LISTS = APT / "state" / "lists"
+STATUS = APT / "state" / "status"
+ARCHIVES = APT / "cache" / "archives"
+INFO = APT / "info"
+USER_STATUS = APT / "user-status"
+APT_CONF = APT / "apt.conf"
+SOURCES = APT / "sources.list"
+
+# apt 는 Installed-Size, Depends, Pre-Depends, Conflicts, Breaks, Replaces 로 같은 버전인지 판단하므로
+# 시스템 패키지 상태에도 이 필드를 그대로 옮긴다.
+STATUS_FIELDS = ("Package", "Status", "Priority", "Section", "Installed-Size", "Architecture", "Multi-Arch",
+                 "Version", "Provides", "Depends", "Pre-Depends", "Conflicts", "Breaks", "Replaces", "Essential")
+INST = re.compile(r"^Inst (\S+) (?:\[[^\]]*\] )?\((\S+) .*\[([^\]]+)\]\)")
+ALT_INSTALL = re.compile(r"update-alternatives\s+(?:--\w+\s+)*--install\s+(\S+)\s+\S+\s+(\S+)\s+\S+"
+                         r"((?:\s+--slave\s+\S+\s+\S+\s+\S+)*)")
+ALT_SLAVE = re.compile(r"--slave\s+(\S+)\s+\S+\s+(\S+)")
+
+OPTS_WITH_VALUE = {"-o", "--option", "-c", "--config-file", "-t", "--target-release", "--default-release",
+                   "-a", "--host-architecture"}
+YES = {"-y", "--yes", "--assume-yes", "--force-yes"}
+SIMULATE = {"-s", "--simulate", "--just-print", "--dry-run", "--recon", "--no-act"}
+DOWNLOAD_ONLY = {"-d", "--download-only"}
+RECOMMENDS = {"--install-recommends", "--no-install-recommends"}
+CACHE_CMDS = {"search", "show", "showsrc", "policy", "depends", "rdepends", "madison", "showpkg", "pkgnames",
+              "stats", "dump", "dumpavail", "unmet", "gencaches"}
+APT_PRETTY = {"search", "show", "showsrc", "policy", "depends", "rdepends"}
+GET_PASSTHROUGH = {"download", "source", "changelog", "clean", "autoclean", "check", "indextargets", "moo"}
+NEEDS_NETWORK = {"download", "source", "changelog"}
+UNSUPPORTED = {"build-dep", "satisfy", "dselect-upgrade"}
+
+USAGE = """tsapt (dots-tsnet) - root 권한 없이 apt 패키지를 설치합니다.
+apt, apt-get, apt-cache 를 그대로 입력해도 이 도구가 받습니다.
+
+  update                  패키지 목록 갱신
+  install <패키지...>      의존성까지 받아 %(root)s 에 설치 (-y, -s, -d 지원)
+  reinstall <패키지...>    다시 설치
+  upgrade                 tsapt 로 설치한 패키지만 갱신 (dist-upgrade, full-upgrade 도 같음)
+  remove <패키지...>       tsapt 로 설치한 패키지 제거 (purge 도 같음)
+  list                    tsapt 로 설치한 패키지 목록 ('apt list' 는 apt 출력 그대로)
+  search, show, policy, depends ...    apt-cache 명령
+  download, source, changelog, clean   apt-get 명령
+  edit-sources            저장소 파일 위치 출력
+""" % {"root": ROOT}
+
+
+def load_conf():
+    conf = {}
+    try:
+        lines = (TSNET_DIR / "tsnet.conf").read_text().splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        key, sep, value = line.partition("=")
+        key = key.strip()
+        if sep and re.fullmatch(r"[A-Z_][A-Z0-9_]*", key):
+            conf[key] = value.strip()
+    for key, value in os.environ.items():
+        if key.startswith("TSNET_") or key == "DOTS_TS_DIR":
+            conf[key] = value
+    return conf
+
+
+CONF = load_conf()
+_ARCH = None
+
+
+def run(cmd, capture=False, **kwargs):
+    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE if capture else None, **kwargs)
+
+
+def apt_env():
+    env = dict(os.environ)
+    env["APT_CONFIG"] = str(APT_CONF)
+    env.setdefault("DEBIAN_FRONTEND", "noninteractive")
+    return env
+
+
+def apt_get(args, capture=False):
+    return run([REAL_APT_GET] + list(args), capture=capture, env=apt_env())
+
+
+def run_tool(tool, args):
+    return run([tool] + list(args), env=apt_env()).returncode
+
+
+def version():
+    try:
+        return (TSNET_DIR / "VERSION").read_text().strip()
+    except OSError:
+        return "unknown"
+
+
+# ---------------------------------------------------------------- 설정 파일
+
+def ensure_dirs():
+    for d in (LISTS / "partial", ARCHIVES / "partial", APT / "log", APT / "apt.conf.d", APT / "preferences.d",
+              APT / "sources.list.d", INFO, ROOT):
+        d.mkdir(parents=True, exist_ok=True)
+    for f in (STATUS, USER_STATUS):
+        if not f.exists():
+            f.touch()
+
+
+def current_arch():
+    global _ARCH
+    if _ARCH is None:
+        try:
+            _ARCH = run(["dpkg", "--print-architecture"], capture=True, stderr=subprocess.DEVNULL,
+                        timeout=10).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            _ARCH = ""
+        if not _ARCH:
+            _ARCH = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine(), "amd64")
+    return _ARCH
+
+
+def apt_proxy():
+    value = CONF.get("TSNET_APT_PROXY", "").strip()
+    if value.lower() in ("off", "none", "direct"):
+        return None
+    return value or "http://127.0.0.1:%s" % CONF.get("TSNET_HTTP_PORT", "1056")
+
+
+def write_apt_conf(arch):
+    def q(value):
+        return '"%s"' % value
+    lines = [
+        "// dots-tsnet 의 tsapt 가 실행할 때마다 다시 만드는 파일입니다. 추가 설정은 apt.conf.d/ 에 두세요.",
+        "Dir::State %s;" % q(APT / "state"),
+        "Dir::State::status %s;" % q(STATUS),
+        "Dir::Cache %s;" % q(APT / "cache"),
+        "Dir::Log %s;" % q(APT / "log"),
+        'Dir::Etc::main "/dev/null";',
+        "Dir::Etc::parts %s;" % q(APT / "apt.conf.d"),
+        "Dir::Etc::sourcelist %s;" % q(SOURCES),
+        "Dir::Etc::sourceparts %s;" % q(APT / "sources.list.d"),
+        "Dir::Etc::preferences %s;" % q(APT / "preferences"),
+        "Dir::Etc::preferencesparts %s;" % q(APT / "preferences.d"),
+        "APT::Architecture %s;" % q(arch),
+        "APT::Architectures { %s; };" % q(arch),
+        'APT::Install-Recommends "false";',
+        'APT::Install-Suggests "false";',
+        'Acquire::Retries "3";',
+        'Acquire::Languages "none";',
+        'Binary::apt::APT::Keep-Downloaded-Packages "true";',
+    ]
+    proxy = apt_proxy()
+    if proxy:
+        lines += ["Acquire::http::Proxy %s;" % q(proxy), "Acquire::https::Proxy %s;" % q(proxy)]
+    if Path("/etc/ssl/certs/ca-certificates.crt").exists():
+        lines.append('Acquire::https::CaInfo "/etc/ssl/certs/ca-certificates.crt";')
+    text = "\n".join(lines) + "\n"
+    if not APT_CONF.exists() or APT_CONF.read_text() != text:
+        APT_CONF.write_text(text)
+
+
+def os_release():
+    data = {}
+    try:
+        for line in Path("/etc/os-release").read_text().splitlines():
+            key, sep, value = line.partition("=")
+            if sep:
+                data[key] = value.strip().strip('"')
+    except OSError:
+        pass
+    return data
+
+
+def signed_by(path):
+    return "[signed-by=%s] " % path if Path(path).exists() else ""
+
+
+def official_sources(arch):
+    info = os_release()
+    code = info.get("VERSION_CODENAME", "")
+    if not code:
+        return None
+    if info.get("ID") == "debian":
+        opt = signed_by("/usr/share/keyrings/debian-archive-keyring.gpg")
+        lines = ["deb %shttps://deb.debian.org/debian %s main" % (opt, code)]
+        if code not in ("sid", "unstable"):
+            lines += ["deb %shttps://deb.debian.org/debian %s-updates main" % (opt, code),
+                      "deb %shttps://security.debian.org/debian-security %s-security main" % (opt, code)]
+        return "\n".join(lines) + "\n"
+    if info.get("ID") == "ubuntu":
+        opt = signed_by("/usr/share/keyrings/ubuntu-archive-keyring.gpg")
+        ports = arch not in ("amd64", "i386")
+        base = "http://ports.ubuntu.com/ubuntu-ports" if ports else "http://archive.ubuntu.com/ubuntu"
+        security = base if ports else "http://security.ubuntu.com/ubuntu"
+        comps = "main restricted universe multiverse"
+        return "".join("deb %s%s %s %s\n" % (opt, url, suite, comps)
+                       for url, suite in ((base, code), (base, code + "-updates"), (security, code + "-security")))
+    return None
+
+
+def ensure_sources(arch):
+    # 처음 한 번만 만든다. 이후에는 사용자가 고친 내용을 그대로 둔다.
+    if SOURCES.exists():
+        return
+    text = official_sources(arch) if CONF.get("TSNET_APT_SOURCES", "official") == "official" else None
+    if text is None:
+        text = ""
+        etc = Path("/etc/apt")
+        for path in [etc / "sources.list"] + sorted((etc / "sources.list.d").glob("*.list")):
+            try:
+                text += path.read_text()
+            except OSError:
+                pass
+        for path in sorted((etc / "sources.list.d").glob("*.sources")):
+            try:
+                (APT / "sources.list.d" / path.name).write_text(path.read_text())
+            except OSError:
+                pass
+    SOURCES.write_text(text)
+
+
+# ---------------------------------------------------------------- 네트워크 확인
+
+def check_proxy():
+    proxy = apt_proxy()
+    if not proxy:
+        return
+    url = urllib.parse.urlsplit(proxy)
+    try:
+        with socket.create_connection((url.hostname or "127.0.0.1", url.port or 80), timeout=3):
+            pass
+    except OSError:
+        sys.exit("tsapt: 프록시 %s 에 연결할 수 없습니다.\n"
+                 "  'tsnet status' 로 tailscaled 와 로컬 프록시 상태를 확인하고, 프록시가 닫혀 있으면"
+                 " 'tsnet apply' 를 실행하세요." % proxy)
+    if not CONF.get("TSNET_APT_PROXY"):
+        warn_without_exit_node()
+
+
+def warn_without_exit_node():
+    dots_ts = Path(CONF.get("DOTS_TS_DIR", "/workspace/.dots-tailscale")) / "dots-ts"
+    try:
+        out = run([str(dots_ts), "cli", "status", "--json"], capture=True, stderr=subprocess.DEVNULL,
+                  timeout=8).stdout
+        if out and json.loads(out).get("ExitNodeStatus") is None:
+            print("tsapt: exit node 가 지정되지 않아 다운로드가 실패할 수 있습니다."
+                  " 'tsnet exit-node <이름>' 으로 지정하세요.", file=sys.stderr)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+
+
+# ---------------------------------------------------------------- 설치 상태
+
+def parse_blocks(text):
+    for block in text.split("\n\n"):
+        fields, key = {}, None
+        for line in block.splitlines():
+            if line[:1] in (" ", "\t"):
+                if key:
+                    fields[key] += "\n" + line
+            elif ":" in line:
+                key, _, value = line.partition(":")
+                fields[key] = value.strip()
+        if "Package" in fields:
+            yield fields
+
+
+def render(fields, order=None):
+    keys = order or list(fields)
+    return "".join("%s: %s\n" % (k, fields[k]) for k in keys if k in fields)
+
+
+def write_user_status(blocks):
+    USER_STATUS.write_text("\n".join(render(b) for b in blocks))
+
+
+def version_gt(a, b):
+    return subprocess.run(["dpkg", "--compare-versions", a, "gt", b]).returncode == 0
+
+
+def dep_names(field):
+    for clause in field.split(","):
+        alts = [re.split(r"[\s(:]", a.strip(), maxsplit=1)[0] for a in clause.split("|") if a.strip()]
+        if alts:
+            yield alts
+
+
+def read_index():
+    arch = current_arch()
+    index = {}
+    for path in sorted(LISTS.glob("*_Packages")):
+        for f in parse_blocks(path.read_text(errors="replace")):
+            if f.get("Architecture") not in (arch, "all"):
+                continue
+            old = index.get(f["Package"])
+            if old is None or version_gt(f["Version"], old["Version"]):
+                index[f["Package"]] = f
+    return index
+
+
+def rebuild_status():
+    """시스템에 이미 있는 패키지를 추론해 apt 상태 파일을 다시 만든다.
+
+    dpkg 데이터베이스가 없으므로 /usr/share/doc 에 문서 폴더가 있는 패키지, 필수 패키지,
+    그리고 그 패키지들이 의존하는 패키지를 설치된 것으로 본다.
+    """
+    try:
+        doc = set(os.listdir(DOC_DIR))
+    except OSError:
+        doc = set()
+    user = {b["Package"]: b for b in parse_blocks(USER_STATUS.read_text())}
+    index = read_index()
+    providers = {}
+    for name, f in index.items():
+        for alts in dep_names(f.get("Provides", "")):
+            for alt in alts:
+                providers.setdefault(alt, []).append(name)
+    present = {n for n, f in index.items()
+               if n not in user and (n in doc or f.get("Essential") == "yes" or f.get("Priority") == "required")}
+    while True:
+        provided = set(present) | set(user)
+        for fields in [index[n] for n in present] + list(user.values()):
+            for alts in dep_names(fields.get("Provides", "")):
+                provided.update(alts)
+        missing = set()
+        for n in present:
+            for field in ("Depends", "Pre-Depends"):
+                for alts in dep_names(index[n].get(field, "")):
+                    if any(a in provided for a in alts):
+                        continue
+                    pick = next((a for a in alts if a in index and a not in user), None)
+                    if pick is None:
+                        pick = next((p for a in alts for p in providers.get(a, []) if p not in user), None)
+                    if pick:
+                        missing.add(pick)
+        missing -= present
+        if not missing:
+            break
+        present |= missing
+    out = []
+    for name in sorted(present):
+        fields = dict(index[name])
+        fields["Status"] = "install ok installed"
+        out.append(render(fields, STATUS_FIELDS))
+    out.extend(render(user[name]) for name in sorted(user))
+    tmp = STATUS.with_name("status.tmp")
+    tmp.write_text("\n".join(out))
+    tmp.replace(STATUS)
+    return len(present), len(user)
+
+
+# ---------------------------------------------------------------- 명령줄 해석
+
+def split_args(argv):
+    """apt 처럼 옵션이 어디에 와도 되도록 옵션과 위치 인자를 나눈다."""
+    opts, pos, flags = [], [], set()
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--":
+            pos.extend(argv[i + 1:])
+            break
+        if arg.startswith("-") and len(arg) > 1:
+            opts.append(arg)
+            if arg in OPTS_WITH_VALUE:
+                if i + 1 < len(argv):
+                    opts.append(argv[i + 1])
+                    i += 1
+            elif re.fullmatch(r"-[A-Za-z]{2,}", arg) and not set(arg[1:]) & set("octa"):
+                flags.update("-" + c for c in arg[1:])
+            else:
+                flags.add(arg.split("=", 1)[0])
+        else:
+            pos.append(arg)
+        i += 1
+    return opts, pos, flags
+
+
+def forward_opts(opts):
+    """tsapt 가 직접 처리하는 -y, -s, -d, 추천 패키지 옵션을 빼고 apt 에 넘길 옵션만 남긴다."""
+    out, take_value = [], False
+    for arg in opts:
+        if take_value:
+            out.append(arg)
+            take_value = False
+        elif arg in OPTS_WITH_VALUE:
+            out.append(arg)
+            take_value = True
+        elif re.fullmatch(r"-[A-Za-z]{2,}", arg) and not set(arg[1:]) & set("octa"):
+            out.extend("-" + c for c in arg[1:] if c not in "ysd")
+        elif arg.split("=", 1)[0] not in YES | SIMULATE | DOWNLOAD_ONLY | RECOMMENDS:
+            out.append(arg)
+    return out
+
+
+# ---------------------------------------------------------------- 설치와 제거
+
+def alternatives_from_script(script):
+    """postinst 의 update-alternatives --install 항목에서 (링크, 대상) 목록을 뽑는다."""
+    script = script.replace("\\\n", " ")
+    pairs = []
+    for match in ALT_INSTALL.finditer(script):
+        pairs.append((match.group(1), match.group(2)))
+        pairs.extend(ALT_SLAVE.findall(match.group(3)))
+    return [(link, target) for link, target in pairs
+            if "$" not in link + target and link.startswith("/") and target.startswith("/")]
+
+
+def apply_alternatives(deb):
+    # 시스템에 같은 경로가 없을 때만 링크를 만든다. 시스템 선택을 덮어쓰지 않기 위해서다.
+    script = run(["dpkg-deb", "-I", str(deb), "postinst"], capture=True, stderr=subprocess.DEVNULL).stdout or ""
+    made = []
+    for link, target in alternatives_from_script(script):
+        dst, src = ROOT / link.lstrip("/"), ROOT / target.lstrip("/")
+        if os.path.lexists(link) or os.path.lexists(dst) or not os.path.lexists(src):
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.symlink_to(os.path.relpath(src, dst.parent))
+        made.append(link.lstrip("/"))
+    return made
+
+
+def extract(deb, name):
+    raw = subprocess.run(["dpkg-deb", "--fsys-tarfile", str(deb)], stdout=subprocess.PIPE, check=True).stdout
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        members = [m.name for m in archive.getmembers()]
+    subprocess.run(["dpkg-deb", "-x", str(deb), str(ROOT)], check=True)
+    files = []
+    for member in members:
+        member = (member[2:] if member.startswith("./") else member.lstrip("/")).rstrip("/")
+        if member and member != ".":
+            files.append(member)
+    (INFO / (name + ".list")).write_text("\n".join(files) + "\n")
+    control = run(["dpkg-deb", "-f", str(deb)], capture=True, check=True).stdout
+    fields = next(parse_blocks(control))
+    entry = {"Package": fields["Package"], "Status": "install ok installed"}
+    entry.update((k, v) for k, v in fields.items() if k != "Package")
+    blocks = [b for b in parse_blocks(USER_STATUS.read_text()) if b["Package"] != name]
+    blocks.append(entry)
+    write_user_status(blocks)
+    return files
+
+
+def fix_symlinks(file_lists):
+    # 패키지 안의 절대 경로 심볼릭 링크가 tsapt 루트 안의 파일을 가리키도록 고친다.
+    for files in file_lists:
+        for rel in files:
+            path = ROOT / rel
+            if not path.is_symlink():
+                continue
+            target = os.readlink(path)
+            inside = ROOT / target.lstrip("/")
+            if target.startswith("/") and os.path.lexists(inside):
+                path.unlink()
+                path.symlink_to(os.path.relpath(inside, path.parent))
+
+
+def ensure_lists(opts):
+    if any(LISTS.glob("*_Packages")):
+        return 0
+    print("tsapt: 패키지 목록이 없어 먼저 update 를 실행합니다.")
+    return update(opts)
+
+
+def update(opts):
+    check_proxy()
+    rc = apt_get(["update"] + forward_opts(opts)).returncode
+    if rc != 0:
+        return rc
+    system, user = rebuild_status()
+    print("tsapt: 시스템 패키지 %d개를 설치된 것으로 인식했습니다 (tsapt 설치 %d개)." % (system, user))
+    return 0
+
+
+def install(names, opts, flags, extra=()):
+    if not names:
+        print("tsapt: 설치할 패키지 이름을 적어 주세요.", file=sys.stderr)
+        return 100
+    local, targets = {}, []
+    for name in names:
+        path = Path(name)
+        if name.endswith(".deb") and path.is_file():
+            pkg = run(["dpkg-deb", "-f", str(path), "Package"], capture=True, check=True).stdout.strip()
+            local[pkg] = path.resolve()
+            targets.append(str(path.resolve()))
+        else:
+            targets.append(name)
+    rc = ensure_lists(opts)
+    if rc:
+        return rc
+    rec = ["--install-recommends"] if "--install-recommends" in flags else ["--no-install-recommends"]
+    args = rec + forward_opts(opts) + list(extra) + targets
+    sim = apt_get(["install", "-s"] + args, capture=True)
+    if sim.returncode != 0:
+        sys.stdout.write(sim.stdout)
+        return sim.returncode
+    items = [m.groups() for m in map(INST.match, sim.stdout.splitlines()) if m]
+    if not items:
+        lines = [line for line in sim.stdout.splitlines()
+                 if line.strip() and not line.startswith(("NOTE", " ", "\t", "Reading", "Building"))]
+        print("\n".join(lines[-3:]) or "설치할 패키지가 없습니다.")
+        return 0
+    print("tsapt: %d개 패키지를 %s 에 설치합니다: %s"
+          % (len(items), ROOT, ", ".join("%s %s" % (n, v) for n, v, _ in items)))
+    if flags & SIMULATE:
+        return 0
+    if not flags & YES and sys.stdin.isatty():
+        try:
+            answer = input("계속할까요? [Y/n] ").strip().lower()
+        except EOFError:
+            answer = "n"
+        if answer not in ("", "y", "yes"):
+            print("중단했습니다.")
+            return 1
+    if any(name not in local for name, _, _ in items):
+        check_proxy()
+        download = apt_get(["install", "-y", "--download-only"] + args)
+        if download.returncode != 0:
+            return download.returncode
+    if flags & DOWNLOAD_ONLY:
+        print("내려받기만 했습니다: %s" % ARCHIVES)
+        return 0
+    done = []
+    for name, ver, arch in items:
+        deb = Path(local.get(name) or ARCHIVES / ("%s_%s_%s.deb" % (name, ver.replace(":", "%3a"), arch)))
+        if not deb.exists():
+            print("tsapt: 받은 파일을 찾지 못했습니다: %s" % deb.name, file=sys.stderr)
+            return 100
+        print("풀기: %s %s" % (name, ver))
+        done.append((name, deb, extract(deb, name)))
+    for name, deb, files in done:
+        links = apply_alternatives(deb)
+        if links:
+            files.extend(links)
+            with open(INFO / (name + ".list"), "a") as stream:
+                stream.write("\n".join(links) + "\n")
+    fix_symlinks([files for _, _, files in done])
+    rebuild_status()
+    print("설치를 마쳤습니다. 새 셸이나 env.sh 를 불러온 셸에서 바로 쓸 수 있습니다.")
+    return 0
+
+
+def upgrade(opts, flags):
+    rc = update(opts)
+    if rc:
+        return rc
+    names = [b["Package"] for b in parse_blocks(USER_STATUS.read_text())]
+    if not names:
+        print("tsapt 로 설치한 패키지가 없습니다. 시스템 패키지는 root 권한이 없어 업그레이드할 수 없습니다.")
+        return 0
+    return install(names, opts, flags, extra=["--only-upgrade"])
+
+
+def remove(names):
+    if not names:
+        print("tsapt: 지울 패키지 이름을 적어 주세요.", file=sys.stderr)
+        return 100
+    blocks = list(parse_blocks(USER_STATUS.read_text()))
+    known = {b["Package"] for b in blocks}
+    rc = 0
+    for name in names:
+        if name not in known:
+            print("tsapt: %s 은(는) tsapt 로 설치한 패키지가 아니라서 지울 수 없습니다." % name, file=sys.stderr)
+            rc = 100
+            continue
+        listing = INFO / (name + ".list")
+        paths = listing.read_text().splitlines() if listing.exists() else []
+        for rel in sorted(set(paths), key=len, reverse=True):
+            path = ROOT / rel
+            if path.is_symlink() or path.is_file():
+                path.unlink()
+            elif path.is_dir():
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+        if listing.exists():
+            listing.unlink()
+        print("제거: %s" % name)
+    write_user_status([b for b in blocks if b["Package"] not in names])
+    rebuild_status()
+    return rc
+
+
+def list_user():
+    blocks = list(parse_blocks(USER_STATUS.read_text()))
+    if not blocks:
+        print("tsapt 로 설치한 패키지가 없습니다.")
+    for b in blocks:
+        print("%s %s" % (b["Package"], b.get("Version", "")))
+    return 0
+
+
+def main(argv=None, prog=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    prog = prog or Path(sys.argv[0]).name
+    ensure_dirs()
+    arch = current_arch()
+    write_apt_conf(arch)
+    ensure_sources(arch)
+    if prog == "apt-cache":
+        return run_tool(REAL_APT_CACHE, argv)
+    opts, pos, flags = split_args(argv)
+    if not pos:
+        if flags & {"-v", "--version"}:
+            print("tsapt (dots-tsnet %s)" % version())
+            return 0
+        print(USAGE)
+        return 0 if not argv or flags & {"-h", "--help"} else 100
+    cmd, args = pos[0], pos[1:]
+    if cmd == "update":
+        return update(opts)
+    if cmd == "install":
+        return install(args, opts, flags)
+    if cmd == "reinstall":
+        return install(args, opts, flags, extra=["--reinstall"])
+    if cmd in ("upgrade", "dist-upgrade", "full-upgrade"):
+        return upgrade(opts, flags)
+    if cmd in ("remove", "purge"):
+        return remove(args)
+    if cmd in ("autoremove", "autopurge"):
+        print("tsapt: 자동 설치 기록을 따로 두지 않아 정리할 패키지가 없습니다.")
+        return 0
+    if cmd == "list":
+        return run_tool(REAL_APT, ["list"] + opts + args) if prog == "apt" else list_user()
+    if cmd in CACHE_CMDS:
+        tool = REAL_APT if prog == "apt" and cmd in APT_PRETTY else REAL_APT_CACHE
+        return run_tool(tool, [cmd] + opts + args)
+    if cmd in GET_PASSTHROUGH:
+        if cmd in NEEDS_NETWORK:
+            check_proxy()
+        return run_tool(REAL_APT_GET, opts + [cmd] + args)
+    if cmd == "edit-sources":
+        print("저장소 파일: %s (고친 뒤 update 를 실행하세요)" % SOURCES)
+        return 0
+    if cmd == "rebuild-status":
+        print("시스템 %d개, tsapt %d개" % rebuild_status())
+        return 0
+    if cmd == "help":
+        print(USAGE)
+        return 0
+    if cmd in UNSUPPORTED:
+        print("tsapt: %s 는 시스템 dpkg 설치가 필요해서 지원하지 않습니다." % cmd, file=sys.stderr)
+        return 100
+    print("tsapt: 알 수 없는 명령입니다: %s ('tsapt help' 참고)" % cmd, file=sys.stderr)
+    return 100
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except subprocess.CalledProcessError as error:
+        print("tsapt: 명령이 실패했습니다: %s" % " ".join(map(str, error.cmd)), file=sys.stderr)
+        sys.exit(100)
+    except KeyboardInterrupt:
+        sys.exit(130)

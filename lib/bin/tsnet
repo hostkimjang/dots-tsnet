@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# tsnet - dots-tsnet 네트워크 도우미
+set -euo pipefail
+TSNET_DIR="${TSNET_DIR:-/workspace/.tsnet}"
+# shellcheck source=../common.sh
+. "$TSNET_DIR/lib/common.sh"
+tsnet_load_conf "$TSNET_DIR/tsnet.conf"
+tsnet_defaults
+CONF="$TSNET_DIR/tsnet.conf"
+VERSION="$(cat "$TSNET_DIR/VERSION" 2> /dev/null || echo unknown)"
+HOOK_MARK="# dots-tsnet"
+
+usage() {
+  cat << EOF
+dots-tsnet $VERSION
+사용법: tsnet [명령]
+  status                       exit node, 로컬 프록시, 외부로 보이는 IP 확인 (기본값)
+  exit-node                    사용할 수 있는 exit node 목록
+  exit-node <이름|off>          exit node 지정 또는 해제 (tsnet.conf 에도 저장)
+  apply [--detach] [--force]   tsnet.conf 의 포트로 tailscaled 프록시 열기 (데몬 재시작)
+  apply --configure-only       설정만 저장하고 재시작하지 않음
+  run <명령...>                 프록시 환경변수를 붙여 명령 하나 실행
+  install-hook | remove-hook   ~/.bashrc 연결 추가 또는 제거
+  version
+현재 셸에서 프록시 켜기/끄기: tsnet_on / tsnet_off
+EOF
+}
+
+onoff() { if [ "$1" = 1 ]; then echo 켜짐; else echo 꺼짐; fi; }
+
+cmd_status() {
+  echo "[exit node]"
+  if ! tsnet_ts status --json 2> /dev/null | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+e = s.get("ExitNodeStatus")
+if not e:
+    print("  지정 안 됨: 프록시 트래픽이 exit node 로 나가지 않습니다 (tsnet exit-node <이름>)")
+    sys.exit(0)
+ips = {a.split("/")[0] for a in e.get("TailscaleIPs") or []}
+name = next((p.get("HostName") for p in (s.get("Peer") or {}).values()
+             if ips & {a.split("/")[0] for a in p.get("TailscaleIPs") or []}), "?")
+print("  %s %s online=%s" % (name, min(ips) if ips else "", e.get("Online")))
+'; then
+    echo "  tailscaled 상태를 읽지 못했습니다: bash $DOTS_TS_DIR/start.sh"
+  fi
+  echo "[로컬 프록시]"
+  if ! "$DOTS_TS_DIR/dots-ts" proxy show | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+print("  설정:", s["desired"], "/ 실행 중:", s["running"], "/ 재시작 필요:", s["restart_required"])
+'; then
+    echo "  dots-ts proxy show 실패"
+  fi
+  echo "[셸 연결]"
+  printf '  apt 연결: %s / sudo 대체: %s / 새 셸 자동 프록시: %s\n' \
+    "$(onoff "$TSNET_APT_SHIM")" "$(onoff "$TSNET_SUDO_SHIM")" "$(onoff "$TSNET_AUTO_PROXY")"
+  printf '  지금 셸의 apt-get: %s\n' "$(command -v apt-get || echo 없음)"
+  echo "[외부로 보이는 IP]"
+  printf '  프록시 경유: '
+  curl -sS -m 20 -x "$TSNET_HTTP_PROXY" https://ifconfig.me 2>&1 || true
+  echo
+}
+
+cmd_exit_node() {
+  local target="${1:-}"
+  if [ -z "$target" ]; then
+    tsnet_ts exit-node list
+    return
+  fi
+  if [ "$target" = off ]; then
+    tsnet_ts set --exit-node=
+    tsnet_set_conf "$CONF" TSNET_EXIT_NODE ""
+    echo "exit node 를 해제했습니다."
+    return
+  fi
+  if ! tsnet_valid_node "$target"; then
+    echo "tsnet: 잘못된 기기 이름입니다: $target" >&2
+    return 2
+  fi
+  tsnet_ts set --exit-node="$target"
+  tsnet_set_conf "$CONF" TSNET_EXIT_NODE "$target"
+  echo "exit node: $target"
+}
+
+cmd_apply() {
+  local detach=0 force=0 configure_only=0 log
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --detach) detach=1 ;;
+      --force) force=1 ;;
+      --configure-only) configure_only=1 ;;
+      *) echo "tsnet: 알 수 없는 옵션입니다: $1" >&2; return 2 ;;
+    esac
+    shift
+  done
+  if ! tsnet_valid_port "$TSNET_SOCKS_PORT" || ! tsnet_valid_port "$TSNET_HTTP_PORT" ||
+    [ "$TSNET_SOCKS_PORT" = "$TSNET_HTTP_PORT" ]; then
+    echo "tsnet: 프록시 포트는 1024-65535 사이(18089 제외)이고 서로 달라야 합니다." >&2
+    return 2
+  fi
+  tsnet_proxy_configure
+  if [ "$configure_only" = 1 ]; then
+    echo "프록시 설정을 저장했습니다 (SOCKS5 $TSNET_SOCKS_PORT, HTTP $TSNET_HTTP_PORT). 적용: tsnet apply"
+    return 0
+  fi
+  if [ "$force" = 0 ] && ! tsnet_proxy_pending; then
+    echo "로컬 프록시가 이미 열려 있습니다 (SOCKS5 127.0.0.1:$TSNET_SOCKS_PORT, HTTP 127.0.0.1:$TSNET_HTTP_PORT)."
+    return 0
+  fi
+  if ! tsnet_in_ssh; then
+    "$DOTS_TS_DIR/dots-ts" proxy apply
+    return
+  fi
+  if [ "$detach" = 0 ]; then
+    cat >&2 << EOF
+tailscaled 를 다시 시작해야 프록시가 열립니다. 지금은 SSH 세션이라 재시작하면 연결이 몇 초 끊깁니다.
+  Dots 화면의 터미널에서:  $TSNET_DIR/bin/tsnet apply
+  SSH 에서 분리 실행:       $TSNET_DIR/bin/tsnet apply --detach
+EOF
+    return 3
+  fi
+  log="$TSNET_DIR/apply.log"
+  : > "$log"
+  chmod 600 "$log"
+  setsid -f nohup env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY \
+    bash "$TSNET_DIR/bin/tsnet" _apply-runner >> "$log" 2>&1 < /dev/null
+  echo "tailscaled 재시작을 SSH 세션과 분리해서 시작했습니다."
+  echo "SSH 가 잠깐 끊기면 다시 접속해서 'tsnet status' 와 $log 를 확인하세요."
+}
+
+# setsid 로 분리된 프로세스에서 실행됩니다. 데몬이 살아나지 않으면 start.sh 로 되살립니다.
+apply_runner() {
+  local rc=0
+  echo "== $(date -Is) proxy apply 시작"
+  "$DOTS_TS_DIR/dots-ts" proxy apply || rc=$?
+  echo "== proxy apply 종료 코드: $rc"
+  for _ in $(seq 1 30); do
+    if tsnet_backend_running; then break; fi
+    sleep 1
+  done
+  if tsnet_backend_running; then
+    echo "== tailscaled Running"
+  else
+    echo "== tailscaled 응답 없음: start.sh 로 복구를 시도합니다"
+    bash "$DOTS_TS_DIR/start.sh" || echo "== start.sh 실패: Dots 화면 터미널에서 bash $DOTS_TS_DIR/start.sh 를 실행하세요"
+  fi
+  "$DOTS_TS_DIR/dots-ts" proxy show || true
+  echo "== $(date -Is) 끝"
+}
+
+hook_line() { printf '[ -f %s/env.sh ] && . %s/env.sh %s\n' "$TSNET_DIR" "$TSNET_DIR" "$HOOK_MARK"; }
+
+# dots-tsnet 이 넣은 줄(이전 수동 구성 포함)을 지웁니다.
+strip_hook() {
+  local file="$1" tmp
+  [ -f "$file" ] || return 0
+  tmp="$(mktemp)"
+  grep -v -e "$HOOK_MARK" -e '\.tsnet/env\.sh' -e '경유 다운로드 환경 (tsnet)' "$file" > "$tmp" || true
+  cat "$tmp" > "$file"
+  rm -f "$tmp"
+}
+
+cmd_install_hook() {
+  touch ~/.bashrc
+  strip_hook ~/.bashrc
+  if [ -s ~/.bashrc ] && [ -n "$(tail -c 1 ~/.bashrc)" ]; then echo >> ~/.bashrc; fi
+  {
+    printf '# dots-tsnet: apt 연결과 Tailscale 경유 다운로드 환경\n'
+    hook_line
+  } >> ~/.bashrc
+  if [ ! -e ~/.bash_profile ] && [ ! -e ~/.bash_login ] && [ ! -e ~/.profile ]; then
+    printf '[ -f ~/.bashrc ] && . ~/.bashrc %s\n' "$HOOK_MARK" > ~/.bash_profile
+  elif [ -e ~/.bash_profile ] && ! grep -q 'bashrc' ~/.bash_profile; then
+    printf '[ -f ~/.bashrc ] && . ~/.bashrc %s\n' "$HOOK_MARK" >> ~/.bash_profile
+  fi
+  echo "~/.bashrc 에 dots-tsnet 환경을 연결했습니다. 새 셸이나 'source ~/.bashrc' 이후 적용됩니다."
+}
+
+cmd_remove_hook() {
+  strip_hook ~/.bashrc
+  if [ -f ~/.bash_profile ]; then
+    strip_hook ~/.bash_profile
+    [ -s ~/.bash_profile ] || rm -f ~/.bash_profile
+  fi
+  echo "~/.bashrc 에서 dots-tsnet 연결을 지웠습니다. 새 셸부터 적용됩니다."
+}
+
+cmd="${1:-status}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+  status) cmd_status ;;
+  exit-node) cmd_exit_node "$@" ;;
+  apply) cmd_apply "$@" ;;
+  _apply-runner) apply_runner ;;
+  run)
+    [ $# -gt 0 ] || { usage >&2; exit 2; }
+    exec env http_proxy="$TSNET_HTTP_PROXY" https_proxy="$TSNET_HTTP_PROXY" \
+      HTTP_PROXY="$TSNET_HTTP_PROXY" HTTPS_PROXY="$TSNET_HTTP_PROXY" \
+      no_proxy="$TSNET_NO_PROXY" NO_PROXY="$TSNET_NO_PROXY" "$@"
+    ;;
+  install-hook) cmd_install_hook ;;
+  remove-hook) cmd_remove_hook ;;
+  version | --version) echo "dots-tsnet $VERSION" ;;
+  help | -h | --help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

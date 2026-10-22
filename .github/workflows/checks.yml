@@ -1,0 +1,17 @@
+name: checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: bash -n install.sh uninstall.sh lib/common.sh lib/env.sh lib/bin/tsnet tests/smoke.sh
+      - name: Python syntax
+        run: python3 -m py_compile lib/bin/tsapt
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -v
