@@ -16,7 +16,9 @@ dots-tsnet $VERSION
 사용법: tsnet [명령]
   status                       exit node, 로컬 프록시, 외부로 보이는 IP 확인 (기본값)
   exit-node                    사용할 수 있는 exit node 목록
-  exit-node <이름|off>          exit node 지정 또는 해제 (tsnet.conf 에도 저장)
+  exit-node {exit-node}|off    exit node 지정 또는 해제 (tsnet.conf 에도 저장)
+                               {exit-node}: 집 PC 또는 중계 서버의 Tailscale 이름
+  start [login]                Tailscale 과 SSH 기동. VM 이 바뀐 뒤 실행 (TSNET_TAILSCALED_ENV 적용)
   apply [--detach] [--force]   tsnet.conf 의 포트로 tailscaled 프록시 열기 (데몬 재시작)
   apply --configure-only       설정만 저장하고 재시작하지 않음
   run <명령...>                 프록시 환경변수를 붙여 명령 하나 실행
@@ -28,6 +30,37 @@ EOF
 
 onoff() { if [ "$1" = 1 ]; then echo 켜짐; else echo 꺼짐; fi; }
 
+# 실행 중인 tailscaled 에 아직 붙지 않은 TSNET_TAILSCALED_ENV 항목을 출력합니다.
+pending_env() {
+  local knobs item missing=""
+  knobs=" $(tsnet_daemon_knobs "$1" | tr '\n' ' ') "
+  for item in "${TSNET_TS_ENV_ARGS[@]}"; do
+    case "$knobs" in *" $item "*) ;; *) missing="$missing $item" ;; esac
+  done
+  printf '%s' "${missing# }"
+}
+
+status_daemon() {
+  local pid knobs missing
+  echo "[tailscaled]"
+  pid="$(tsnet_daemon_pid)"
+  if [ -z "$pid" ]; then
+    echo "  실행 중이 아닙니다: tsnet start"
+    return 0
+  fi
+  knobs="$(tsnet_daemon_knobs "$pid" | tr '\n' ' ')"
+  knobs="${knobs% }"
+  printf '  PID %s / TS_ 환경변수: %s\n' "$pid" "${knobs:-없음}"
+  if ! tsnet_tailscaled_env "$TSNET_TAILSCALED_ENV" 2> /dev/null; then
+    echo "  tsnet.conf 의 TSNET_TAILSCALED_ENV 형식이 잘못됐습니다"
+    return 0
+  fi
+  missing="$(pending_env "$pid")"
+  if [ -n "$missing" ]; then
+    printf '  아직 적용되지 않은 TSNET_TAILSCALED_ENV: %s (tailscaled 가 새로 뜰 때 적용)\n' "$missing"
+  fi
+}
+
 cmd_status() {
   echo "[exit node]"
   if ! tsnet_ts status --json 2> /dev/null | python3 -c '
@@ -35,12 +68,18 @@ import json, sys
 s = json.load(sys.stdin)
 e = s.get("ExitNodeStatus")
 if not e:
-    print("  지정 안 됨: 프록시 트래픽이 exit node 로 나가지 않습니다 (tsnet exit-node <이름>)")
+    print("  지정 안 됨: 프록시 트래픽이 exit node 로 나가지 않습니다 (tsnet exit-node {exit-node})")
     sys.exit(0)
 ips = {a.split("/")[0] for a in e.get("TailscaleIPs") or []}
-name = next((p.get("HostName") for p in (s.get("Peer") or {}).values()
-             if ips & {a.split("/")[0] for a in p.get("TailscaleIPs") or []}), "?")
-print("  %s %s online=%s" % (name, min(ips) if ips else "", e.get("Online")))
+peer = next((p for p in (s.get("Peer") or {}).values()
+             if ips & {a.split("/")[0] for a in p.get("TailscaleIPs") or []}), {})
+if peer.get("CurAddr"):
+    path = "직접 연결 " + peer["CurAddr"]
+elif peer.get("Relay"):
+    path = "DERP 릴레이 " + peer["Relay"]
+else:
+    path = "아직 통신 기록 없음"
+print("  %s %s online=%s / 경로: %s" % (peer.get("HostName", "?"), min(ips) if ips else "", e.get("Online"), path))
 '; then
     echo "  tailscaled 상태를 읽지 못했습니다: bash $DOTS_TS_DIR/start.sh"
   fi
@@ -52,6 +91,7 @@ print("  설정:", s["desired"], "/ 실행 중:", s["running"], "/ 재시작 필
 '; then
     echo "  dots-ts proxy show 실패"
   fi
+  status_daemon
   echo "[셸 연결]"
   printf '  apt 연결: %s / sudo 대체: %s / 새 셸 자동 프록시: %s\n' \
     "$(onoff "$TSNET_APT_SHIM")" "$(onoff "$TSNET_SUDO_SHIM")" "$(onoff "$TSNET_AUTO_PROXY")"
@@ -81,6 +121,29 @@ cmd_exit_node() {
   tsnet_ts set --exit-node="$target"
   tsnet_set_conf "$CONF" TSNET_EXIT_NODE "$target"
   echo "exit node: $target"
+}
+
+cmd_start() {
+  local rc=0 pid missing
+  tsnet_tailscaled_env "$TSNET_TAILSCALED_ENV" || return
+  if [ "${#TSNET_TS_ENV_ARGS[@]}" -gt 0 ]; then
+    printf 'tailscaled 를 새로 띄울 때 붙일 환경변수: %s\n' "${TSNET_TS_ENV_ARGS[*]}"
+  fi
+  # 셸의 프록시 변수(tsnet_on)가 dots-tailscale 기동에 섞이지 않게 뺍니다.
+  env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u no_proxy -u NO_PROXY \
+    "${TSNET_TS_ENV_ARGS[@]}" bash "$DOTS_TS_DIR/start.sh" "$@" || rc=$?
+  if [ "$rc" = 10 ]; then
+    echo "Tailscale 로그인이 필요합니다: tsnet start login" >&2
+  fi
+  [ "$rc" = 0 ] || return "$rc"
+  pid="$(tsnet_daemon_pid)"
+  if [ -n "$pid" ]; then
+    missing="$(pending_env "$pid")"
+    if [ -n "$missing" ]; then
+      printf '참고: 이미 실행 중이던 tailscaled 를 그대로 써서 %s 는 아직 적용되지 않았습니다.\n' "$missing"
+      printf '      바로 적용하는 방법은 docs/how-it-works.ko.md 의 GSO·GRO 절에 있습니다.\n'
+    fi
+  fi
 }
 
 cmd_apply() {
@@ -191,6 +254,7 @@ cmd="${1:-status}"
 case "$cmd" in
   status) cmd_status ;;
   exit-node) cmd_exit_node "$@" ;;
+  start) cmd_start "$@" ;;
   apply) cmd_apply "$@" ;;
   _apply-runner) apply_runner ;;
   run)

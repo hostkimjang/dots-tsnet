@@ -255,8 +255,8 @@ def check_proxy():
             pass
     except OSError:
         sys.exit("tsapt: 프록시 %s 에 연결할 수 없습니다.\n"
-                 "  'tsnet status' 로 tailscaled 와 로컬 프록시 상태를 확인하고, 프록시가 닫혀 있으면"
-                 " 'tsnet apply' 를 실행하세요." % proxy)
+                 "  'tsnet status' 로 상태를 확인하세요. tailscaled 가 꺼져 있으면 'tsnet start',"
+                 " 프록시만 닫혀 있으면 'tsnet apply' 를 실행합니다." % proxy)
     if not CONF.get("TSNET_APT_PROXY"):
         warn_without_exit_node()
 
@@ -268,7 +268,7 @@ def warn_without_exit_node():
                   timeout=8).stdout
         if out and json.loads(out).get("ExitNodeStatus") is None:
             print("tsapt: exit node 가 지정되지 않아 다운로드가 실패할 수 있습니다."
-                  " 'tsnet exit-node <이름>' 으로 지정하세요.", file=sys.stderr)
+                  " 'tsnet exit-node {exit-node}' 로 지정하세요.", file=sys.stderr)
     except (OSError, ValueError, subprocess.SubprocessError):
         pass
 

@@ -1,6 +1,7 @@
-# dots-tsnet 설정 파일입니다. KEY=VALUE 형식만 쓰고 셸 확장은 하지 않습니다.
-# 각 값의 뜻은 README 의 "설정" 표를 참고하세요.
+# dots-tsnet 설정 파일입니다. 이름=값 형식만 쓰고 셸 확장은 하지 않습니다.
+# 각 값의 뜻은 README 의 "설정 바꾸기" 표를 참고하세요.
 DOTS_TS_DIR=/workspace/.dots-tailscale
+# 다운로드가 거쳐 나갈 집 PC 또는 중계 서버의 Tailscale 이름. 'tsnet exit-node {exit-node}' 가 함께 바꿉니다.
 TSNET_EXIT_NODE=
 TSNET_SOCKS_PORT=1055
 TSNET_HTTP_PORT=1056
@@ -10,4 +11,8 @@ TSNET_APT_SHIM=1
 TSNET_SUDO_SHIM=1
 TSNET_PYTHONPATH=1
 TSNET_APT_SOURCES=official
+# 비우면 tailscaled HTTP 프록시. 빠른 apt 를 원하면 http://browser-proxy:8889 (플랫폼이 내용을 볼 수 있음)
 TSNET_APT_PROXY=
+# tailscaled 를 새로 띄울 때 붙일 TS_이름=값 목록 (공백으로 구분). 'tsnet start' 와 install.sh 가 씁니다.
+# 예: TSNET_TAILSCALED_ENV=TS_DEBUG_DISABLE_UDP_GSO=true TS_DEBUG_DISABLE_UDP_GRO=true
+TSNET_TAILSCALED_ENV=

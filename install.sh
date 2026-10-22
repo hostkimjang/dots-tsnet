@@ -20,8 +20,8 @@ DETACH=0 DO_APPLY=1 DO_HOOK=1 DO_LOGIN=1 CHECK_UPSTREAM_ONLY=0
 usage() {
   cat << 'EOF'
 사용법: bash install.sh [옵션]
-  --exit-node 이름        exit node 로 쓸 Tailscale 기기 이름 (예: my-home-pc)
-  --authorized-key '키'   SSH 공개키 한 줄을 dots-tailscale authorized_keys 에 추가
+  --exit-node {exit-node}             exit node 로 쓸 집 PC 또는 중계 서버의 Tailscale 이름
+  --authorized-key '{ssh-public-key}' SSH 공개키 한 줄(ssh-ed25519 AAAA...)을 authorized_keys 에 추가
   --socks-port 포트       로컬 SOCKS5 프록시 포트 (기본 1055)
   --http-port 포트        로컬 HTTP 프록시 포트 (기본 1056)
   --detach                SSH 에서 실행할 때 tailscaled 재시작을 분리 실행 (SSH 가 몇 초 끊김)
@@ -29,6 +29,8 @@ usage() {
   --no-hook               ~/.bashrc 를 바꾸지 않음
   --skip-login            Tailscale 로그인이 필요하면 진행하지 않고 멈춤
   --check-upstream        dots-tailscale 원본 파일을 준비해 체크섬만 확인하고 끝냄
+
+환경변수 TSNET_TAILSCALED_ENV='TS_이름=값 ...' 를 주면 tailscaled 를 새로 띄울 때 붙이고 tsnet.conf 에 저장합니다.
 EOF
 }
 
@@ -119,6 +121,8 @@ case "$AUTH_KEY_LINE" in
   '' | ssh-* | ecdsa-* | sk-*) ;;
   *) die "--authorized-key 에는 'ssh-ed25519 AAAA...' 형식의 공개키 한 줄을 주세요." ;;
 esac
+TS_ENV_VALUE="${TSNET_TAILSCALED_ENV-$(tsnet_conf_get "$TSNET_DIR/tsnet.conf" TSNET_TAILSCALED_ENV)}"
+tsnet_tailscaled_env "$TS_ENV_VALUE" || exit 2
 
 preflight
 
@@ -146,13 +150,18 @@ if [ -n "$AUTH_KEY_LINE" ]; then
 fi
 
 step "Tailscale 기동"
+start_dots_ts() {
+  env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u no_proxy -u NO_PROXY \
+    "${TSNET_TS_ENV_ARGS[@]}" bash "$DOTS_TS_DIR/start.sh" "$@"
+}
+[ "${#TSNET_TS_ENV_ARGS[@]}" = 0 ] || echo "tailscaled 를 새로 띄울 때 붙일 환경변수: ${TSNET_TS_ENV_ARGS[*]}"
 rc=0
-bash "$DOTS_TS_DIR/start.sh" || rc=$?
+start_dots_ts || rc=$?
 if [ "$rc" = 10 ]; then
   [ "$DO_LOGIN" = 1 ] || die "Tailscale 로그인이 필요합니다: bash $DOTS_TS_DIR/start.sh login"
   echo "Tailscale 로그인이 필요합니다. 아래에 나오는 URL 을 브라우저에서 열어 승인하세요."
   rc=0
-  bash "$DOTS_TS_DIR/start.sh" login || rc=$?
+  start_dots_ts login || rc=$?
 fi
 case "$rc" in
   0) ;;
@@ -176,6 +185,7 @@ CONF="$TSNET_DIR/tsnet.conf"
 [ -z "$EXIT_NODE" ] || tsnet_set_conf "$CONF" TSNET_EXIT_NODE "$EXIT_NODE"
 [ -z "$SOCKS_PORT" ] || tsnet_set_conf "$CONF" TSNET_SOCKS_PORT "$SOCKS_PORT"
 [ -z "$HTTP_PORT" ] || tsnet_set_conf "$CONF" TSNET_HTTP_PORT "$HTTP_PORT"
+[ -z "${TSNET_TAILSCALED_ENV+x}" ] || tsnet_set_conf "$CONF" TSNET_TAILSCALED_ENV "$TSNET_TAILSCALED_ENV"
 tsnet_set_conf "$CONF" DOTS_TS_DIR "$DOTS_TS_DIR"
 tsnet_load_conf "$CONF"
 tsnet_defaults
@@ -192,7 +202,7 @@ if [ -n "$TSNET_EXIT_NODE" ]; then
     echo "경고: exit node '$TSNET_EXIT_NODE' 를 지정하지 못했습니다. 관리 콘솔에서 승인됐는지 확인한 뒤 'tsnet exit-node $TSNET_EXIT_NODE' 를 다시 실행하세요." >&2
 else
   "$TSNET_DIR/bin/tsnet" exit-node || true
-  echo "exit node 를 아직 지정하지 않았습니다. docs/exit-node.ko.md 를 따라 준비한 뒤 'tsnet exit-node <이름>' 을 실행하세요."
+  echo "exit node 를 아직 지정하지 않았습니다. docs/exit-node.ko.md 를 따라 준비한 뒤 'tsnet exit-node {exit-node}' 를 실행하세요."
 fi
 
 step "마무리"
@@ -201,6 +211,7 @@ cat << EOF
   tsnet status                  상태 확인
   apt-get update                패키지 목록 갱신
   apt-get install -y <패키지>    설치 (위치: $TSNET_ROOT)
+  tsnet start                   VM 이 바뀐 뒤 Tailscale 다시 띄우기
 EOF
 
 # tailscaled 재시작은 SSH 를 끊을 수 있으므로 항상 마지막에 둡니다.
