@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tsnet - dots-tsnet 네트워크 도우미
 set -euo pipefail
-TSNET_DIR="${TSNET_DIR:-/workspace/.tsnet}"
+# 이 파일은 설치 폴더의 bin/ 안에 있습니다. 설치 위치는 이 파일의 위치에서 정합니다.
+TSNET_DIR="${TSNET_DIR:-$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd)}"
 # shellcheck source=../common.sh
 . "$TSNET_DIR/lib/common.sh"
 tsnet_load_conf "$TSNET_DIR/tsnet.conf"
@@ -9,16 +10,22 @@ tsnet_defaults
 CONF="$TSNET_DIR/tsnet.conf"
 VERSION="$(cat "$TSNET_DIR/VERSION" 2> /dev/null || echo unknown)"
 HOOK_MARK="# dots-tsnet"
+KNOBS_PY="$TSNET_DIR/lib/setup_knobs.py"
+UPSTREAM_COPY="$TSNET_DIR/lib/upstream/tailscale-setup.sh"
 
 usage() {
   cat << EOF
 dots-tsnet $VERSION
 사용법: tsnet [명령]
-  status                       exit node, 로컬 프록시, 외부로 보이는 IP 확인 (기본값)
+  status                       exit node, 로컬 프록시, dots-tailscale, 외부로 보이는 IP 확인 (기본값)
+  doctor [--fix]               dots-ts doctor 와 setup.sh 점검
+                               --fix: setup.sh 에 직접 넣은 TS_ 설정을 tsnet.conf 로 옮기고 원본을 되살림
   exit-node                    사용할 수 있는 exit node 목록
   exit-node {exit-node}|off    exit node 지정 또는 해제 (tsnet.conf 에도 저장)
                                {exit-node}: 집 PC 또는 중계 서버의 Tailscale 이름
   start [login]                Tailscale 과 SSH 기동. VM 이 바뀐 뒤 실행 (TSNET_TAILSCALED_ENV 적용)
+  start --new-identity         Tailscale 상태 파일이 사라졌을 때 새 기기로 로그인 (로그인 URL 승인 필요)
+  restart [--detach]           tailscaled 를 멈췄다 새로 띄워 TSNET_TAILSCALED_ENV 를 바로 적용 (SSH 는 잠깐 끊김)
   apply [--detach] [--force]   tsnet.conf 의 포트로 tailscaled 프록시 열기 (데몬 재시작)
   apply --configure-only       설정만 저장하고 재시작하지 않음
   run <명령...>                 프록시 환경변수를 붙여 명령 하나 실행
@@ -43,6 +50,12 @@ pending_env() {
 status_daemon() {
   local pid knobs missing
   echo "[tailscaled]"
+  if [ -n "$(tsnet_stale_processes)" ]; then
+    echo "  설치 파일이 지워진 채로 돌고 있습니다. 새 연결과 상태 저장이 실패합니다: Dots 화면 터미널에서 tsnet start"
+  fi
+  if tsnet_identity_lost; then
+    echo "  Tailscale 상태 파일이 없습니다(기기 신원 사라짐): tsnet start --new-identity"
+  fi
   pid="$(tsnet_daemon_pid)"
   if [ -z "$pid" ]; then
     echo "  실행 중이 아닙니다: tsnet start"
@@ -57,8 +70,41 @@ status_daemon() {
   fi
   missing="$(pending_env "$pid")"
   if [ -n "$missing" ]; then
-    printf '  아직 적용되지 않은 TSNET_TAILSCALED_ENV: %s (tailscaled 가 새로 뜰 때 적용)\n' "$missing"
+    printf '  아직 적용되지 않은 TSNET_TAILSCALED_ENV: %s (바로 적용: tsnet restart)\n' "$missing"
   fi
+}
+
+# 백업을 갱신하고 무엇이 들어 있는지 보여 줍니다.
+status_backup() {
+  local dir
+  dir="$(tsnet_backup_dir)"
+  echo "[설치 위치와 백업]"
+  printf '  설치: %s, %s\n' "$TSNET_DIR" "$DOTS_TS_DIR"
+  if [ "${TSNET_IDENTITY_BACKUP:-1}" != 1 ]; then
+    echo "  백업: 꺼짐 (TSNET_IDENTITY_BACKUP=0)"
+    return 0
+  fi
+  tsnet_backup_identity
+  if [ -s "$dir/tailscaled.state" ]; then
+    printf '  백업: %s / Tailscale 상태 %s 기준\n' "$dir" "$(date -r "$dir/tailscaled.state" '+%Y-%m-%d %H:%M')"
+  else
+    printf '  백업: 아직 없음 (%s, Tailscale 로그인 뒤 만들어짐)\n' "$dir"
+  fi
+}
+
+status_upstream() {
+  echo "[dots-tailscale]"
+  { "$DOTS_TS_DIR/dots-ts" version --json 2> /dev/null || true; } | python3 -c '
+import json, sys
+try:
+    package = json.load(sys.stdin)["package"]
+except (ValueError, KeyError, TypeError):
+    print("  버전 정보를 읽지 못했습니다")
+    sys.exit(0)
+integrity = package.get("integrity")
+hint = "" if integrity == "match" else " (tsnet doctor 로 확인)"
+print("  v%s / 파일 무결성: %s%s" % (package.get("declared_version"), integrity, hint))
+'
 }
 
 cmd_status() {
@@ -81,7 +127,7 @@ else:
     path = "아직 통신 기록 없음"
 print("  %s %s online=%s / 경로: %s" % (peer.get("HostName", "?"), min(ips) if ips else "", e.get("Online"), path))
 '; then
-    echo "  tailscaled 상태를 읽지 못했습니다: bash $DOTS_TS_DIR/start.sh"
+    echo "  tailscaled 상태를 읽지 못했습니다: tsnet start"
   fi
   echo "[로컬 프록시]"
   if ! "$DOTS_TS_DIR/dots-ts" proxy show | python3 -c '
@@ -91,7 +137,9 @@ print("  설정:", s["desired"], "/ 실행 중:", s["running"], "/ 재시작 필
 '; then
     echo "  dots-ts proxy show 실패"
   fi
+  status_upstream
   status_daemon
+  status_backup
   echo "[셸 연결]"
   printf '  apt 연결: %s / sudo 대체: %s / 새 셸 자동 프록시: %s\n' \
     "$(onoff "$TSNET_APT_SHIM")" "$(onoff "$TSNET_SUDO_SHIM")" "$(onoff "$TSNET_AUTO_PROXY")"
@@ -100,6 +148,124 @@ print("  설정:", s["desired"], "/ 실행 중:", s["running"], "/ 재시작 필
   printf '  프록시 경유: '
   curl -sS -m 20 -x "$TSNET_HTTP_PROXY" https://ifconfig.me 2>&1 || true
   echo
+}
+
+# dots-tailscale 의 setup.sh 를 설치 기록(source-manifest.json)과 비교합니다.
+#   match: 원본과 같음 / fixable: TS_ 설정만 직접 추가됨 / modified: 다른 변경도 있음
+#   nocopy: 비교할 원본 사본이 없음 / unknown: 파일을 읽지 못함
+inspect_setup() {
+  local installed="$DOTS_TS_DIR/setup.sh" want got out
+  SETUP_STATE=unknown
+  SETUP_REASON=""
+  SETUP_KNOBS=()
+  want="$(tsnet_manifest_setup_hash)"
+  got="$(tsnet_sha256 "$installed")"
+  if [ -z "$want" ] || [ -z "$got" ]; then
+    SETUP_REASON="setup.sh 나 source-manifest.json 을 읽지 못했습니다"
+    return 0
+  fi
+  if [ "$got" = "$want" ]; then
+    SETUP_STATE=match
+    return 0
+  fi
+  if [ ! -f "$UPSTREAM_COPY" ] || [ "$(tsnet_sha256 "$UPSTREAM_COPY")" != "$want" ]; then
+    SETUP_STATE=nocopy
+    SETUP_REASON="설치된 dots-tailscale 버전의 원본 setup.sh 가 dots-tsnet 에 없습니다"
+    return 0
+  fi
+  if out="$(python3 "$KNOBS_PY" extract "$UPSTREAM_COPY" "$installed" 2>&1)"; then
+    SETUP_STATE=fixable
+    [ -z "$out" ] || mapfile -t SETUP_KNOBS <<< "$out"
+  else
+    SETUP_STATE=modified
+    SETUP_REASON="$out"
+  fi
+}
+
+# setup.sh 에 직접 넣은 TS_ 설정을 tsnet.conf 로 옮기고, 설치 기록과 SHA-256 이 같은 원본을 되살립니다.
+repair_setup() {
+  local installed="$DOTS_TS_DIR/setup.sh" lock="$DOTS_TS_DIR/.operation.lock" current merged backup
+  inspect_setup
+  case "$SETUP_STATE" in
+    match) echo "setup.sh 는 이미 dots-tailscale 원본과 같습니다."; return 0 ;;
+    fixable) ;;
+    *) echo "tsnet: setup.sh 를 자동으로 되돌리지 않습니다: $SETUP_REASON" >&2; return 1 ;;
+  esac
+  if [ -L "$installed" ] || [ -L "$lock" ]; then
+    echo "tsnet: 심볼릭 링크는 다루지 않습니다: $installed" >&2
+    return 1
+  fi
+  current="$(tsnet_conf_get "$CONF" TSNET_TAILSCALED_ENV)"
+  merged="$(python3 "$KNOBS_PY" merge "$current" "${SETUP_KNOBS[@]}")" || return 1
+  install -d -m 700 "$TSNET_DIR/backup"
+  backup="$TSNET_DIR/backup/setup.sh.$(date +%Y%m%d-%H%M%S)"
+  cp -p -- "$installed" "$backup"
+  [ -e "$lock" ] || (umask 077 && : > "$lock")
+  if ! (
+    flock -n 9 || { echo "tsnet: dots-tailscale 작업이 진행 중입니다. 잠시 뒤 다시 실행하세요." >&2; exit 1; }
+    tmp="$(mktemp "$DOTS_TS_DIR/.setup.sh.XXXXXX")"
+    cat -- "$UPSTREAM_COPY" > "$tmp"
+    chmod 700 "$tmp"
+    if [ "$(tsnet_sha256 "$tmp")" != "$(tsnet_manifest_setup_hash)" ]; then
+      rm -f -- "$tmp"
+      echo "tsnet: 되살릴 파일의 SHA-256 이 설치 기록과 달라 멈춥니다." >&2
+      exit 1
+    fi
+    mv -f -- "$tmp" "$installed"
+  ) 9>> "$lock"; then
+    return 1
+  fi
+  [ "$merged" = "$current" ] || tsnet_set_conf "$CONF" TSNET_TAILSCALED_ENV "$merged"
+  echo "setup.sh 를 dots-tailscale 원본으로 되돌렸습니다. 고쳤던 파일은 $backup 에 있습니다."
+  if [ "${#SETUP_KNOBS[@]}" -gt 0 ]; then
+    printf '들어 있던 %s 는 tsnet.conf 의 TSNET_TAILSCALED_ENV 로 옮겼습니다.\n' "${SETUP_KNOBS[*]}"
+  fi
+  echo "실행 중인 tailscaled 는 그대로 둡니다. 다음에 tsnet start 나 tsnet restart 로 띄울 때도 같은 값이 붙습니다."
+}
+
+cmd_doctor() {
+  local fix=0 rc=0
+  case "${1:-}" in
+    '') ;;
+    --fix) fix=1 ;;
+    *) echo "tsnet: 알 수 없는 옵션입니다: $1" >&2; return 2 ;;
+  esac
+  if [ "$fix" = 1 ]; then
+    repair_setup || return
+    echo
+  fi
+  "$DOTS_TS_DIR/dots-ts" doctor || rc=$?
+  echo
+  echo "[dots-tsnet]"
+  inspect_setup
+  case "$SETUP_STATE" in
+    match) echo "  setup.sh: dots-tailscale 원본과 같음" ;;
+    fixable)
+      if [ "${#SETUP_KNOBS[@]}" -gt 0 ]; then
+        printf '  setup.sh: 원본에 %s 만 직접 추가돼 있음\n' "${SETUP_KNOBS[*]}"
+      else
+        echo "  setup.sh: 내용은 원본과 같고 줄바꿈이나 주석만 다름"
+      fi
+      echo "  고치기: tsnet doctor --fix (값은 tsnet.conf 로 옮기고 원본을 되살림. tailscaled 는 재시작하지 않음)"
+      ;;
+    *) printf '  setup.sh: 자동으로 고칠 수 없음 (%s)\n' "$SETUP_REASON" ;;
+  esac
+  status_daemon
+  return "$rc"
+}
+
+# install.sh 가 마지막에 부르는 짧은 안내입니다.
+check_setup_notice() {
+  inspect_setup
+  case "$SETUP_STATE" in
+    match | unknown) ;;
+    fixable)
+      echo "참고: dots-tailscale 의 setup.sh 가 원본과 달라 'dots-ts doctor' 가 unhealthy 로 봅니다."
+      if [ "${#SETUP_KNOBS[@]}" -gt 0 ]; then printf '      직접 넣은 설정: %s\n' "${SETUP_KNOBS[*]}"; fi
+      echo "      'tsnet doctor --fix' 를 실행하면 설정은 tsnet.conf 로 옮기고 원본을 되살립니다."
+      ;;
+    *) echo "참고: dots-tailscale 의 setup.sh 가 원본과 다릅니다 ($SETUP_REASON). 'tsnet doctor' 로 확인하세요." ;;
+  esac
 }
 
 cmd_exit_node() {
@@ -124,26 +290,187 @@ cmd_exit_node() {
 }
 
 cmd_start() {
-  local rc=0 pid missing
+  local rc=0 pid missing name new_identity=0
+  local -a scrub=() args=()
+  for name in "$@"; do
+    case "$name" in
+      --new-identity) new_identity=1 ;;
+      *) args+=("$name") ;;
+    esac
+  done
   tsnet_tailscaled_env "$TSNET_TAILSCALED_ENV" || return
+  tsnet_stop_stale || return
+  # 설치 폴더가 지워졌으면 백업의 Tailscale 신원과 SSH 호스트 키를 먼저 되돌립니다.
+  [ "$new_identity" = 1 ] || tsnet_restore_identity
+  if tsnet_identity_lost; then
+    if [ "$new_identity" = 0 ]; then
+      identity_lost_help
+      return 4
+    fi
+    rm -f -- "$DOTS_TS_DIR/authenticated"
+    echo "옛 Tailscale 신원 표시(authenticated)를 지웠습니다. 새 기기로 로그인합니다."
+    [ "${#args[@]}" -gt 0 ] || args=(login)
+  fi
   if [ "${#TSNET_TS_ENV_ARGS[@]}" -gt 0 ]; then
     printf 'tailscaled 를 새로 띄울 때 붙일 환경변수: %s\n' "${TSNET_TS_ENV_ARGS[*]}"
   fi
-  # 셸의 프록시 변수(tsnet_on)가 dots-tailscale 기동에 섞이지 않게 뺍니다.
-  env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u no_proxy -u NO_PROXY \
-    "${TSNET_TS_ENV_ARGS[@]}" bash "$DOTS_TS_DIR/start.sh" "$@" || rc=$?
+  # 셸에 남은 TS_ 변수와 프록시 변수(tsnet_on)는 빼고, TSNET_TAILSCALED_ENV 만 tailscaled 에 넘깁니다.
+  for name in $(compgen -e); do
+    case "$name" in TS_*) scrub+=(-u "$name") ;; esac
+  done
+  # 대화형 SSH(PTY) 보정: 보정 없이 떠 있는 sshd 리스너는 멈추고, start.sh 가 보정과 함께 다시 띄웁니다.
+  tsnet_preload_args
+  tsnet_refresh_sshd
+  env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u no_proxy -u NO_PROXY "${scrub[@]}" \
+    ${TSNET_PRELOAD_ARGS[@]+"${TSNET_PRELOAD_ARGS[@]}"} "${TSNET_TS_ENV_ARGS[@]}" \
+    bash "$DOTS_TS_DIR/start.sh" ${args[@]+"${args[@]}"} || rc=$?
   if [ "$rc" = 10 ]; then
     echo "Tailscale 로그인이 필요합니다: tsnet start login" >&2
   fi
   [ "$rc" = 0 ] || return "$rc"
+  tsnet_backup_identity
   pid="$(tsnet_daemon_pid)"
   if [ -n "$pid" ]; then
     missing="$(pending_env "$pid")"
     if [ -n "$missing" ]; then
       printf '참고: 이미 실행 중이던 tailscaled 를 그대로 써서 %s 는 아직 적용되지 않았습니다.\n' "$missing"
-      printf '      바로 적용하는 방법은 docs/how-it-works.ko.md 의 GSO·GRO 절에 있습니다.\n'
+      printf '      바로 적용하려면: tsnet restart (SSH 에서는 tsnet restart --detach)\n'
     fi
   fi
+}
+
+identity_lost_help() {
+  cat >&2 << EOF
+tsnet: Tailscale 상태 파일($DOTS_TS_DIR/state/tailscaled.state)이 없습니다. 이 기기의 Tailscale 신원이 사라졌습니다.
+  백업($(tsnet_backup_dir))에도 없어서 되돌리지 못했습니다.
+  다른 곳에 백업해 둔 상태 파일이 있으면 그 자리에 되돌려 놓고 다시 실행하세요.
+  없으면 새 기기로 로그인합니다(로그인 URL 승인 필요):  $TSNET_DIR/bin/tsnet start --new-identity
+  등록한 뒤 Tailscale 관리 콘솔에서 옛 기기를 지우거나 새 기기의 이름을 바꾸세요.
+EOF
+}
+
+cmd_restart() {
+  local detach=0 log
+  case "${1:-}" in
+    '') ;;
+    --detach) detach=1 ;;
+    *) echo "tsnet: 알 수 없는 옵션입니다: $1" >&2; return 2 ;;
+  esac
+  tsnet_tailscaled_env "$TSNET_TAILSCALED_ENV" || return
+  if ! tsnet_in_ssh; then
+    restart_runner
+    return
+  fi
+  if [ "$detach" = 0 ]; then
+    cat >&2 << EOF
+tailscaled 를 다시 시작하면 이 SSH 연결이 몇 초 끊깁니다.
+  Dots 화면의 터미널에서:  $TSNET_DIR/bin/tsnet restart
+  SSH 에서 분리 실행:       $TSNET_DIR/bin/tsnet restart --detach
+EOF
+    return 3
+  fi
+  log="$TSNET_DIR/restart.log"
+  : > "$log"
+  chmod 600 "$log"
+  setsid -f nohup env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY \
+    bash "$TSNET_DIR/bin/tsnet" _restart-runner >> "$log" 2>&1 < /dev/null
+  echo "tailscaled 재시작을 SSH 세션과 분리해서 시작했습니다."
+  echo "SSH 가 끊기면 10초쯤 뒤 다시 접속해서 'tsnet status' 와 $log 를 확인하세요."
+}
+
+# 이 설치의 tailscaled 만 골라 멈춥니다. 멈출 것이 없으면 성공입니다.
+stop_daemon() {
+  local pid sock
+  # 설치 파일이 지워진 채 남은 데몬은 실행 파일 경로로 확인할 수 없으므로 따로 멈춥니다.
+  if [ -n "$(tsnet_stale_processes)" ]; then
+    tsnet_stop_stale
+    return
+  fi
+  sock="$(tsnet_socket_path)"
+  pid="$(tsnet_daemon_pid)"
+  if [ -n "$pid" ]; then
+    if [ "$(readlink "/proc/$pid/exe" 2> /dev/null || true)" != "$DOTS_TS_DIR/tailscaled" ]; then
+      echo "== PID $pid 가 이 설치의 tailscaled 인지 확인하지 못해 멈춥니다"
+      return 1
+    fi
+    kill -TERM "$pid"
+    for _ in $(seq 1 100); do
+      kill -0 "$pid" 2> /dev/null || break
+      sleep 0.1
+    done
+    if kill -0 "$pid" 2> /dev/null; then
+      echo "== tailscaled(PID $pid)가 10초 안에 끝나지 않았습니다"
+      return 1
+    fi
+    echo "== tailscaled(PID $pid) 종료"
+  fi
+  if [ -n "$(tsnet_daemon_pid)" ]; then
+    echo "== 다른 tailscaled 가 떠 있습니다"
+    return 1
+  fi
+  # 방금 멈춘 데몬이 남긴 소켓만 지웁니다. 남아 있으면 start.sh 가 기동을 거부합니다.
+  if [ -S "$sock" ] && [ ! -L "$sock" ] && [ -O "$sock" ]; then
+    rm -f -- "$sock"
+    echo "== 남아 있던 소켓을 지웠습니다"
+  fi
+}
+
+# 프록시 포트가 풀리기를 기다렸다가 tsnet start 를 최대 3번 시도합니다.
+start_fresh() {
+  local attempt rc=1
+  tsnet_wait_ports 90 "$TSNET_SOCKS_PORT" "$TSNET_HTTP_PORT" ||
+    echo "== 90초를 기다려도 프록시 포트가 풀리지 않았습니다. 그래도 시작해 봅니다"
+  for attempt in 1 2 3; do
+    rc=0
+    cmd_start || rc=$?
+    [ "$rc" != 0 ] || return 0
+    [ -z "$(tsnet_daemon_pid)" ] || return "$rc"
+    echo "== tsnet start 실패(종료 코드 $rc, $attempt/3)"
+    sleep 10
+  done
+  return "$rc"
+}
+
+# 새 tailscaled 로 실제 트래픽이 지나가는지 봅니다. exit node 를 쓰면 프록시로 바깥 주소에 접속해 봅니다.
+data_path_ok() {
+  local i
+  for i in $(seq 1 15); do
+    if [ -n "$TSNET_EXIT_NODE" ]; then
+      if curl -sS -m 8 -x "$TSNET_HTTP_PROXY" -o /dev/null https://ifconfig.me 2> /dev/null; then return 0; fi
+    elif tsnet_backend_running; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+# tailscaled 를 멈췄다가 TSNET_TAILSCALED_ENV 로 새로 띄웁니다. 새 데몬으로 트래픽이 지나가지 않으면
+# 재시작 전 데몬의 TS_ 설정으로 되돌립니다. SSH 가 끊긴 채 남지 않게 하려는 것입니다.
+restart_runner() {
+  local pid item old_env=""
+  echo "== $(date -Is) tailscaled 재시작 시작"
+  pid="$(tsnet_daemon_pid)"
+  if [ -n "$pid" ]; then
+    while IFS= read -r item; do
+      if [[ "$item" =~ ^TS_[A-Z0-9_]+=[A-Za-z0-9._:/,-]*$ ]]; then old_env="$old_env $item"; fi
+    done < <(tsnet_daemon_knobs "$pid")
+    old_env="${old_env# }"
+  fi
+  stop_daemon || return 1
+  if start_fresh && data_path_ok; then
+    echo "== 새 tailscaled 로 트래픽이 지나갑니다"
+  else
+    echo "== 새 tailscaled 로 트래픽이 지나가지 않아 재시작 전 설정(${old_env:-TS_ 설정 없음})으로 되돌립니다"
+    if stop_daemon && TSNET_TAILSCALED_ENV="$old_env" start_fresh && data_path_ok; then
+      echo "== 되돌렸습니다"
+    else
+      echo "== 되돌리지 못했습니다. Dots 화면 터미널에서 $TSNET_DIR/bin/tsnet start 를 실행하세요"
+    fi
+  fi
+  status_daemon
+  "$DOTS_TS_DIR/dots-ts" proxy show || true
+  echo "== $(date -Is) 끝"
 }
 
 cmd_apply() {
@@ -253,10 +580,14 @@ cmd="${1:-status}"
 [ $# -gt 0 ] && shift
 case "$cmd" in
   status) cmd_status ;;
+  doctor) cmd_doctor "$@" ;;
   exit-node) cmd_exit_node "$@" ;;
   start) cmd_start "$@" ;;
+  restart) cmd_restart "$@" ;;
+  _restart-runner) restart_runner ;;
   apply) cmd_apply "$@" ;;
   _apply-runner) apply_runner ;;
+  _check-setup) check_setup_notice ;;
   run)
     [ $# -gt 0 ] || { usage >&2; exit 2; }
     exec env http_proxy="$TSNET_HTTP_PROXY" https_proxy="$TSNET_HTTP_PROXY" \

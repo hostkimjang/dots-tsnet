@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # dots-tsnet 제거 스크립트. dots-tailscale 설치와 Tailscale 로그인 상태는 그대로 둡니다.
 set -euo pipefail
-TSNET_DIR="${TSNET_DIR:-/workspace/.tsnet}"
+# 0.1.2 부터 기본 설치 위치는 홈 폴더입니다. 그 전 버전으로 /workspace 에 설치했다면 그쪽을 지웁니다.
+if [ -z "${TSNET_DIR:-}" ]; then
+  TSNET_DIR="$HOME/.tsnet"
+  [ -x "$TSNET_DIR/bin/tsnet" ] || [ ! -x /workspace/.tsnet/bin/tsnet ] || TSNET_DIR=/workspace/.tsnet
+fi
 KEEP_PACKAGES=0
 case "${1:-}" in
   '') ;;
@@ -28,8 +32,8 @@ tsnet_defaults
 
 if [ "$KEEP_PACKAGES" = 1 ]; then
   rm -rf -- "$TSNET_DIR/bin" "$TSNET_DIR/lib" "$TSNET_DIR/shims" "$TSNET_DIR/env.sh" \
-    "$TSNET_DIR/VERSION" "$TSNET_DIR/tsnet.conf" "$TSNET_DIR/apply.log"
-  echo "프로그램을 지웠습니다. 설치한 패키지와 apt 캐시는 $TSNET_DIR 에 남겼습니다."
+    "$TSNET_DIR/VERSION" "$TSNET_DIR/tsnet.conf" "$TSNET_DIR/apply.log" "$TSNET_DIR/restart.log"
+  echo "프로그램을 지웠습니다. 설치한 패키지, apt 캐시, setup.sh 백업(backup/)은 $TSNET_DIR 에 남겼습니다."
 else
   rm -rf -- "$TSNET_DIR"
   echo "$TSNET_DIR 를 지웠습니다."
@@ -42,3 +46,10 @@ dots-tailscale 과 Tailscale 로그인 상태는 그대로입니다.
 - 이미 열려 있는 셸에는 이전 환경이 남아 있으니 새 셸을 여세요.
 - exit node 로 쓰던 기기의 광고를 끄려면 그 기기에서: tailscale set --advertise-exit-node=false
 EOF
+if [ -n "$TSNET_TAILSCALED_ENV" ]; then
+  echo "- TSNET_TAILSCALED_ENV($TSNET_TAILSCALED_ENV)는 이제 tailscaled 에 붙지 않습니다. 계속 쓰려면 start.sh 를 실행할 때 앞에 직접 붙이세요."
+fi
+BACKUP_DIR="$(tsnet_backup_dir)"
+if [ -d "$BACKUP_DIR" ]; then
+  echo "- 백업($BACKUP_DIR)에는 Tailscale 개인키가 들어 있어 남겨 뒀습니다. 이 기기를 tailnet 에서 완전히 지울 때 함께 지우세요."
+fi

@@ -2,7 +2,9 @@
 # 설치를 마친 Dots 클라우드 컴퓨터에서 실제 네트워크와 패키지 설치를 확인합니다.
 # 사용법: bash tests/smoke.sh [패키지 (기본 pv)] [실행 파일 이름 (기본 패키지 이름)]
 set -euo pipefail
-TSNET_DIR="${TSNET_DIR:-/workspace/.tsnet}"
+TSNET_DIR="${TSNET_DIR:-$HOME/.tsnet}"
+# 0.1.1 까지의 기본 위치(/workspace/.tsnet)에 설치했다면 그쪽을 씁니다.
+[ -f "$TSNET_DIR/env.sh" ] || [ ! -f /workspace/.tsnet/env.sh ] || TSNET_DIR=/workspace/.tsnet
 # shellcheck source=/dev/null
 . "$TSNET_DIR/env.sh"
 PKG="${1:-pv}"

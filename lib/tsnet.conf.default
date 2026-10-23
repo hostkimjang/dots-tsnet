@@ -1,6 +1,6 @@
 # dots-tsnet 설정 파일입니다. 이름=값 형식만 쓰고 셸 확장은 하지 않습니다.
 # 각 값의 뜻은 README 의 "설정 바꾸기" 표를 참고하세요.
-DOTS_TS_DIR=/workspace/.dots-tailscale
+# DOTS_TS_DIR (dots-tailscale 설치 위치)은 install.sh 가 이 아래에 적습니다.
 # 다운로드가 거쳐 나갈 집 PC 또는 중계 서버의 Tailscale 이름. 'tsnet exit-node {exit-node}' 가 함께 바꿉니다.
 TSNET_EXIT_NODE=
 TSNET_SOCKS_PORT=1055
@@ -16,3 +16,8 @@ TSNET_APT_PROXY=
 # tailscaled 를 새로 띄울 때 붙일 TS_이름=값 목록 (공백으로 구분). 'tsnet start' 와 install.sh 가 씁니다.
 # 예: TSNET_TAILSCALED_ENV=TS_DEBUG_DISABLE_UDP_GSO=true TS_DEBUG_DISABLE_UDP_GRO=true
 TSNET_TAILSCALED_ENV=
+# Tailscale 신원, SSH 호스트 키, 이 설정 파일, tsapt 패키지 목록을 설치와 다른 위치에 백업할지 (1: 백업, 0: 끔).
+# 홈 폴더에 설치했으면 /workspace/.dots-tsnet-backup 에 둡니다. 설치 폴더가 지워져도 같은 기기로 다시 설치하기 위한 것입니다.
+TSNET_IDENTITY_BACKUP=1
+# 대화형 SSH(PTY) 보정 (1: 사용, 0: 끔). Dots 의 /dev/pts 권한 때문에 sshd 가 PTY 를 열다 접속을 끊는 문제를 피합니다.
+TSNET_SSH_PTY_FIX=1

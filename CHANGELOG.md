@@ -1,5 +1,23 @@
 # 변경 기록
 
+## 0.1.2 - 2026-10-23
+
+Dots 정리 작업이 설치 폴더를 지운 일을 겪고, 설치 위치를 홈 폴더로 옮기고 복구 경로를 더했습니다. GSO·GRO와 UDP에 관한 틀린 서술도 측정값으로 고쳤습니다.
+
+- 설치 위치: dots-tailscale은 `~/.dots-tailscale`, dots-tsnet은 `~/.tsnet`(패키지 포함)에 설치합니다. 2026-10-23 06:49에 Dots 정리 작업이 `/workspace` 최상위 폴더를 지웠을 때 홈 폴더는 남았기 때문입니다. `TSNET_DIR`, `DOTS_TS_DIR`로 바꿀 수 있습니다.
+- `install.sh`: `/workspace`에 있던 예전 설치를 홈 폴더로 옮깁니다. 같은 Tailscale 신원, SSH 키, 설정, 패키지를 가져가고, 새 위치에서 띄우지 못하면 되돌리며, 바탕화면 실행 아이콘의 경로도 고칩니다. SSH에서는 `--detach`로 분리해서 진행합니다.
+- 백업: 기기 신원, SSH 호스트 키, `authorized_keys`, `tsnet.conf`, 패키지 목록을 설치 반대편(`/workspace/.dots-tsnet-backup`)에 복사하고, 다시 설치할 때 비어 있는 자리만 되돌립니다. `TSNET_IDENTITY_BACKUP=0`으로 끕니다.
+- 지워진 파일로 도는 옛 tailscaled, shim, sshd를 `tsnet start`와 `install.sh`가 찾아 멈추고 새로 띄웁니다. SSH 세션 안에서는 연결이 끊기지 않게 안내만 합니다.
+- 빠진 dots-tailscale 파일은 같은 버전으로 다시 채웁니다. 기기 신원이 사라졌고 백업도 없으면 멈추고, `--new-identity`를 줄 때만 새 기기로 로그인합니다.
+- 대화형 SSH(PTY) 보정: Dots의 `/dev/pts` 권한 때문에 sshd가 접속을 끊는 문제를 작은 `LD_PRELOAD` 라이브러리(`/dev/pts` 아래 `chown`만 성공으로 처리)로 피합니다. `TSNET_SSH_PTY_FIX=0`으로 끕니다.
+- `tsnet doctor [--fix]`: dots-tailscale 점검에 더해, `setup.sh`에 직접 넣은 `TS_` 설정을 `tsnet.conf`로 옮기고 원본을 되살립니다.
+- `tsnet restart [--detach]`: `TSNET_TAILSCALED_ENV`를 바로 적용합니다. 프록시 포트가 풀릴 때까지 최대 90초 기다리고, 세 번까지 다시 시도하고, 실제 트래픽을 확인하며, 실패하면 이전 설정으로 되돌립니다.
+- `install.sh`: 기동 직후 기기 목록이 늦게 와서 exit node 지정이 실패하면 몇 번 다시 시도합니다.
+- 문서: "Dots에서는 GSO·GRO가 속도에 영향이 없다"는 측정 없이 쓴 단정을 지우고, 끔·켬을 번갈아 잰 결과와 끄면 빨라지는 Tailscale 이슈 사례를 넣었습니다.
+- 문서: "Dots의 UDP는 목적지에 따라 막힌다", "DERP 28개 지역 STUN에 응답 없음"을 고쳤습니다. 다시 재 보니 목적지 포트 3478로만 나갑니다.
+- 문서: 설치 위치와 백업, 정리 작업 관찰 기록, 복구 방법, 대화형 SSH 보정, 저녁 시간대 속도를 더했습니다.
+- 테스트: 37개. 옛 프로세스 찾기와 정리, 백업과 복원, 백업 위치, 포트 대기, `env.sh`의 설치 위치 찾기, PTY 보정을 더했습니다. `tests/smoke.sh`는 홈 폴더 설치를 먼저 찾고, 없으면 예전 위치(`/workspace/.tsnet`)를 씁니다.
+
 ## 0.1.1 - 2026-10-23
 
 문서를 다시 쓰고, tailscaled 환경변수를 원본 파일 수정 없이 유지하는 방법을 더했습니다.

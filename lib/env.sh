@@ -1,7 +1,8 @@
 # dots-tsnet 셸 환경입니다. ~/.bashrc 에서 불러옵니다.
 # apt, apt-get, apt-cache 를 tsapt 로 연결하고, 다운로드가 Tailscale exit node 로 나가도록 프록시 변수를 설정합니다.
 [ -n "${BASH_VERSION:-}" ] || return 0
-TSNET_DIR="${TSNET_DIR:-/workspace/.tsnet}"
+# 이 파일은 설치 폴더 바로 아래에 있습니다. 설치 위치는 이 파일의 위치에서 정합니다.
+TSNET_DIR="${TSNET_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}"
 { [ -f "$TSNET_DIR/lib/common.sh" ] && [ -f "$TSNET_DIR/tsnet.conf" ]; } || return 0
 . "$TSNET_DIR/lib/common.sh"
 tsnet_load_conf "$TSNET_DIR/tsnet.conf"
@@ -29,6 +30,16 @@ tsnet_on() {
 }
 tsnet_off() { unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY; }
 if [ "$TSNET_AUTO_PROXY" = 1 ]; then tsnet_on; fi
+
+# tailscaled 에 붙일 TS_ 설정을 셸에도 내보냅니다. 이 셸에서 dots-tailscale 의 start.sh 를 직접 실행해도 같은 값이 붙습니다.
+if [ -n "$TSNET_TAILSCALED_ENV" ] && tsnet_tailscaled_env "$TSNET_TAILSCALED_ENV" 2> /dev/null; then
+  for _tsnet_item in "${TSNET_TS_ENV_ARGS[@]}"; do export "$_tsnet_item"; done
+  unset _tsnet_item
+fi
+unset TSNET_TS_ENV_ARGS
+
+# Tailscale 신원과 설정이 바뀌었으면 백업을 갱신합니다(바뀐 파일만 복사).
+tsnet_backup_identity 2> /dev/null || true
 
 # sudo 가 없는 컴퓨터에서 'sudo apt ...' 를 그대로 쓸 수 있게 합니다.
 if [ "$TSNET_SUDO_SHIM" = 1 ] && ! type -P sudo > /dev/null 2>&1; then

@@ -19,7 +19,8 @@ import tarfile
 import urllib.parse
 from pathlib import Path
 
-TSNET_DIR = Path(os.environ.get("TSNET_DIR", "/workspace/.tsnet"))
+# 이 파일은 설치 폴더의 bin/ 안에 있습니다(apt, apt-get 연결은 이 파일을 가리키는 심볼릭 링크).
+TSNET_DIR = Path(os.environ.get("TSNET_DIR") or Path(__file__).resolve().parent.parent)
 DOC_DIR = Path(os.environ.get("TSNET_DOC_DIR", "/usr/share/doc"))
 REAL_APT_GET = os.environ.get("TSNET_REAL_APT_GET", "/usr/bin/apt-get")
 REAL_APT_CACHE = os.environ.get("TSNET_REAL_APT_CACHE", "/usr/bin/apt-cache")
@@ -262,7 +263,7 @@ def check_proxy():
 
 
 def warn_without_exit_node():
-    dots_ts = Path(CONF.get("DOTS_TS_DIR", "/workspace/.dots-tailscale")) / "dots-ts"
+    dots_ts = Path(CONF.get("DOTS_TS_DIR", str(Path.home() / ".dots-tailscale"))) / "dots-ts"
     try:
         out = run([str(dots_ts), "cli", "status", "--json"], capture=True, stderr=subprocess.DEVNULL,
                   timeout=8).stdout
