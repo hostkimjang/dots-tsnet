@@ -7,13 +7,14 @@
 - [x] `bash -n`으로 셸 스크립트 문법 확인
 - [x] `python3 -m py_compile lib/bin/tsapt lib/setup_knobs.py`
 - [x] `python3 -m unittest discover -s tests` (Dots에서 37개 통과)
-- [ ] GitHub Actions `checks` 통과 (푸시한 뒤 확인)
+- [x] GitHub Actions `checks` 통과 (d3be7bc)
 
 ## 설치
 
 - [x] 서브모듈의 dots-tailscale 파일 체크섬 확인 (`bash install.sh --check-upstream`)
 - [x] 서브모듈이 없을 때 릴리스 파일을 browser-proxy로 내려받고 체크섬 확인 (`TSNET_UPSTREAM_SOURCE=download bash install.sh --check-upstream`)
-- [x] 공개 저장소를 browser-proxy로 `--recurse-submodules` clone한 뒤 체크섬과 단위 테스트 통과
+- [x] 공개 저장소를 browser-proxy로 `--recurse-submodules` clone한 뒤 체크섬과 단위 테스트 통과 (0.1.2는 홈 폴더에 clone, 37개 통과)
+- [x] 0.1.2를 받은 뒤 README의 복구 절차대로 `bash install.sh`: 실행 중인 tailscaled를 다시 띄우지 않고 그대로 쓰고, exit node와 `TS_` 환경변수 유지
 - [x] 기존 설치 위에 다시 설치해도 설정과 설치한 패키지가 유지됨 (0.1.0 → 0.1.1 → 0.1.2)
 - [x] `/workspace` 설치를 홈 폴더로 옮김: SSH에서 `--detach`로 분리 실행, 같은 기기 신원과 exit node 설정 유지, 패키지 446MB 복사, 실행 아이콘 두 개 경로 수정, 옛 위치 삭제 (2026-10-23 실제 Dots)
 - [x] 옮긴 뒤 dots-tailscale 파일 무결성 `match`, 백업이 `/workspace/.dots-tsnet-backup`에 권한 600으로 생김
@@ -39,6 +40,7 @@
 ## 네트워크
 
 - [x] 프록시를 거친 외부 IP가 exit node 기기의 공인 IP와 같음
+- [x] 홈 폴더로 옮긴 뒤 계속 돌던 Dots Chrome이 새 tailscaled의 HTTP 프록시(1056)로 다시 연결됨 (연결 13개, 프록시 경유 Google HTTP 200)
 - [x] 프록시 없이 직접 연결하면 실패함 (Dots 기본 정책)
 - [x] exit node를 Windows 11에서 OPNsense로 바꾸면 외부 IP도 OPNsense 공인 IP로 바뀌고 `apt-get update`, 7MB 다운로드가 정상 동작
 - [x] exit node 없이 tailnet 기기 접속: HTTP 프록시와 SOCKS5 모두 HTTP 200, `dots-ts cli nc`로 SSH 포트 연결, 인터넷 요청은 실패
@@ -63,7 +65,7 @@
 - [x] `apt-get build-dep`는 지원하지 않는다고 안내 (종료 코드 100)
 - [x] 패키지 폴더를 다른 위치로 복사해도 링크가 깨지지 않음 (tsapt의 링크는 상대 경로, 홈 폴더 이동 때 Chrome 포함 확인)
 - [x] pip가 같은 프록시로 내려받음
-- [x] `tests/smoke.sh` 통과 (0.1.1)
+- [x] `tests/smoke.sh` 통과 (0.1.2, 공개 저장소 사본에서 실행, pv 설치와 제거)
 
 ## 문서
 
