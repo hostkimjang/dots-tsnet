@@ -151,17 +151,22 @@ class InstallStateTest(unittest.TestCase):
         self.assertEqual(bash(check, env=self.env).stdout.strip(), "incomplete")
 
     def test_backup_goes_to_the_other_location(self):
-        home = self.dir / "home"
-        env = {"HOME": str(home), "DOTS_TS_DIR": str(home / ".dots-tailscale")}
-        self.assertEqual(bash("tsnet_backup_dir", env=env).stdout.strip(), "/workspace/.dots-tsnet-backup")
-        env["DOTS_TS_DIR"] = "/workspace/.dots-tailscale"
+        home, shared = self.dir / "home", self.dir / "shared"
+        env = {"HOME": str(home), "TSNET_SHARED_BASE": str(shared), "DOTS_TS_DIR": str(home / ".dots-tailscale")}
+        self.assertEqual(bash("tsnet_backup_dir", env=env).stdout.strip(), str(shared / ".dots-tsnet-backup"))
+        env["DOTS_TS_DIR"] = str(shared / ".dots-tailscale")
         self.assertEqual(bash("tsnet_backup_dir", env=env).stdout.strip(), str(home / ".local/state/dots-tsnet"))
         env["TSNET_BACKUP_DIR"] = "/elsewhere"
         self.assertEqual(bash("tsnet_backup_dir", env=env).stdout.strip(), "/elsewhere")
 
-    def test_default_install_location_is_home(self):
-        result = bash('tsnet_defaults; echo "$TSNET_DIR $DOTS_TS_DIR"', env={"HOME": "/home/agent"})
-        self.assertEqual(result.stdout.split(), ["/home/agent/.tsnet", "/home/agent/.dots-tailscale"])
+    def test_default_install_location_prefers_workspace_shared(self):
+        shared = self.dir / "shared"
+        env = {"HOME": "/home/agent", "TSNET_SHARED_BASE": str(shared)}
+        check = 'tsnet_defaults; echo "$TSNET_DIR $DOTS_TS_DIR"'
+        # /workspace/shared 가 없는 환경에서는 홈 폴더에 설치합니다.
+        self.assertEqual(bash(check, env=env).stdout.split(), ["/home/agent/.tsnet", "/home/agent/.dots-tailscale"])
+        shared.mkdir()
+        self.assertEqual(bash(check, env=env).stdout.split(), [str(shared / ".tsnet"), str(shared / ".dots-tailscale")])
 
     def test_env_sh_finds_its_own_install_location(self):
         tsnet = self.dir / "somewhere" / ".tsnet"
@@ -207,7 +212,7 @@ class PtyShimTest(unittest.TestCase):
 
 @unittest.skipUnless(Path("/proc/self/exe").exists(), "Linux 파일 권한이 필요합니다")
 class IdentityBackupTest(unittest.TestCase):
-    """Dots 정리 작업이 /workspace 의 설치 폴더를 지운 상황을 흉내 내서 홈 폴더 백업과 복원을 확인합니다."""
+    """Dots 정리 작업이 설치 폴더를 지운 상황을 흉내 내서 다른 쪽에 둔 백업과 복원을 확인합니다."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -253,6 +258,20 @@ class IdentityBackupTest(unittest.TestCase):
         result = bash("tsnet_restore_identity", env=self.env)
         self.assertEqual(result.stdout, "")
         self.assertEqual(self.state.read_text(), '{"node":"new"}')
+
+    def test_restore_falls_back_to_an_older_backup_location(self):
+        # 지금 위치에 백업이 없으면 예전 버전이 쓰던 백업 위치에서 되돌립니다.
+        root = Path(self.tmp.name)
+        home = root / "home"
+        env = {"HOME": str(home), "TSNET_SHARED_BASE": str(root / "shared"),
+               "DOTS_TS_DIR": str(home / ".dots-tailscale"), "TSNET_DIR": str(self.tsnet)}
+        older = home / ".local" / "state" / "dots-tsnet"
+        older.mkdir(parents=True, mode=0o700)
+        (older / "tailscaled.state").write_text('{"node":"older"}')
+        result = bash("tsnet_restore_identity", env=env)
+        self.assertIn("Tailscale 상태", result.stdout, result.stderr)
+        self.assertIn(str(older), result.stdout)
+        self.assertEqual((home / ".dots-tailscale" / "state" / "tailscaled.state").read_text(), '{"node":"older"}')
 
     def test_backup_follows_newer_state_unless_turned_off(self):
         bash("tsnet_backup_identity", env=self.env)

@@ -4,7 +4,7 @@
 
 dots-tsnet makes downloads in a ChatGPT Dots cloud computer terminal (`apt-get install`, `pip install`, `curl`, git over HTTPS) leave through **your own home PC or relay server** instead of the platform proxy. As a bonus, `apt-get install` works without root.
 
-Running Tailscale and SSH on the Dots computer is handled by [abruption/dots-tailscale](https://github.com/abruption/dots-tailscale), which this project uses unmodified as a pinned submodule. dots-tsnet adds two things on top: which way your downloads go out, and where packages get installed. It installs into your home directory so that the setup survives Dots's own workspace cleanup.
+Running Tailscale and SSH on the Dots computer is handled by [abruption/dots-tailscale](https://github.com/abruption/dots-tailscale), which this project uses unmodified as a pinned submodule. dots-tsnet adds two things on top: which way your downloads go out, and where packages get installed. It installs into `/workspace/shared` so that the setup survives Dots's own storage cleanup.
 
 > This is a personal project. It is not affiliated with OpenAI, Tailscale, or dots-tailscale, and it may stop working if the Dots environment changes. Command-line messages are currently in Korean; this README and the docs are in English.
 
@@ -47,9 +47,9 @@ flowchart LR
   C --> D["Internet<br/>deb.debian.org, pypi.org ..."]
 ```
 
-- **Use apt as usual.** Typing `apt`, `apt-get` or `apt-cache` runs [tsapt](docs/tsapt.md), which downloads packages with their dependencies and installs them into `~/.tsnet/root`. Since there is no sudo, `sudo apt install ...` is accepted too. These are PATH entries, not shell aliases, so they also work inside scripts.
+- **Use apt as usual.** Typing `apt`, `apt-get` or `apt-cache` runs [tsapt](docs/tsapt.md), which downloads packages with their dependencies and installs them into `/workspace/shared/.tsnet/root`. Since there is no sudo, `sudo apt install ...` is accepted too. These are PATH entries, not shell aliases, so they also work inside scripts.
 - **Downloads leave through your device.** New shells get `http_proxy` and `https_proxy`, so pip, curl, git and npm go out through `{exit-node}`. To the outside world, requests come from `{exit-node}`'s public IP.
-- **Install once.** Programs, settings and installed packages all live in your home directory (`~/.tsnet`, `~/.dots-tailscale`). Dots's cleanup once deleted top-level folders under `/workspace`, which is why the home directory is used. See [Where things live, and backups](#where-things-live-and-backups).
+- **Install once.** Programs, settings and installed packages all live in `/workspace/shared` (`.tsnet`, `.dots-tailscale`). That folder survives the Dots scratch cleanup that deletes top-level folders under `/workspace`, and the Dots desktop keeps its own user settings there. See [Where things live, and backups](#where-things-live-and-backups).
 
 For the details (the exact tailscaled command, what the Python shim does, the network limits we measured, and the cleanup we observed), see [How it works](docs/how-it-works.md).
 
@@ -78,7 +78,7 @@ Follow [Preparing an exit node](docs/exit-node.md) to turn on the exit node feat
 
 ### Step 2: Download in the Dots terminal
 
-Run this in the Dots desktop terminal (recommended) or over SSH. The Dots terminal cannot reach GitHub directly, so this one time you point git at the platform proxy. Clone into your home directory as well.
+Run this in the Dots desktop terminal (recommended) or over SSH. The Dots terminal cannot reach GitHub directly, so this one time you point git at the platform proxy. The clone can live anywhere; the installer picks the install location.
 
 ```bash
 cd ~
@@ -97,12 +97,12 @@ bash install.sh --exit-node {exit-node}
 
 The installer goes through these steps and skips anything already done:
 
-1. **Install dots-tailscale and log in**: if it is missing, the pinned version (v0.4.0) is verified against SHA-256 values and installed into `~/.dots-tailscale`. On first use, a Tailscale login URL appears; open it in your browser and approve. To SSH in from your own computer, add your public key (one `ssh-ed25519 AAAA...` line) with `--authorized-key '{ssh-public-key}'`.
-2. **Install dots-tsnet**: `tsnet`, `tsapt` and the shell environment file go into `~/.tsnet` and are hooked into `~/.bashrc`. A small library that keeps interactive SSH sessions from being dropped is compiled here too ([How it works](docs/how-it-works.md#interactive-ssh-pty-fix)).
+1. **Install dots-tailscale and log in**: if it is missing, the pinned version (v0.4.0) is verified against SHA-256 values and installed into `/workspace/shared/.dots-tailscale`. On first use, a Tailscale login URL appears; open it in your browser and approve. To SSH in from your own computer, add your public key (one `ssh-ed25519 AAAA...` line) with `--authorized-key '{ssh-public-key}'`.
+2. **Install dots-tsnet**: `tsnet`, `tsapt` and the shell environment file go into `/workspace/shared/.tsnet` and are hooked into `~/.bashrc`. A small library that keeps interactive SSH sessions from being dropped is compiled here too ([How it works](docs/how-it-works.md#interactive-ssh-pty-fix)).
 3. **Select the exit node**: Tailscale on Dots is told to use `{exit-node}`.
 4. **Open the local proxies**: tailscaled is restarted with a SOCKS5 proxy (`127.0.0.1:1055`) and an HTTP proxy (`127.0.0.1:1056`).
 
-If an older version (0.1.1 or earlier) installed into `/workspace`, the same command moves that install into your home directory. The Tailscale identity, SSH keys, settings and installed packages come along, so you do not log in again. If the moved install cannot start, the installer goes back to the `/workspace` install.
+If an older version installed into your home directory (0.1.2) or into `/workspace` (0.1.1 or earlier), the same command moves that install into `/workspace/shared`. The Tailscale identity, SSH keys, settings and installed packages come along, so you do not log in again. If the moved install cannot start, the installer goes back to the old install. The move restarts tailscaled, which drops SSH for a minute or two, so add `--detach` when you run it over SSH.
 
 > **Installing over SSH?** Step 4, and moving an older install, restart tailscaled, so your SSH session drops for a minute or two. Answer `y` when asked, or pass `--detach`, and the work continues outside your SSH session with automatic rollback on failure. A move is logged to `~/dots-tsnet-install.log`. Running the installer in the Dots desktop terminal avoids this entirely.
 
@@ -126,11 +126,11 @@ A healthy setup looks like this (labels are in Korean):
 [tailscaled]
   PID 1234 / TS_ 환경변수: 없음
 [설치 위치와 백업]
-  설치: /home/agent/.tsnet, /home/agent/.dots-tailscale
-  백업: /workspace/.dots-tsnet-backup / Tailscale 상태 2026-10-23 19:18 기준
+  설치: /workspace/shared/.tsnet, /workspace/shared/.dots-tailscale
+  백업: /home/agent/.local/state/dots-tsnet / Tailscale 상태 2026-10-23 19:18 기준
 [셸 연결]
   apt 연결: 켜짐 / sudo 대체: 켜짐 / 새 셸 자동 프록시: 켜짐
-  지금 셸의 apt-get: /home/agent/.tsnet/shims/apt-get
+  지금 셸의 apt-get: /workspace/shared/.tsnet/shims/apt-get
 [외부로 보이는 IP]
   프록시 경유: 203.0.113.10
 ```
@@ -165,19 +165,23 @@ pv --version
 
 | What | Where |
 |---|---|
-| dots-tailscale (Tailscale, sshd, node identity) | `~/.dots-tailscale` |
-| dots-tsnet (tsnet, tsapt, settings, installed packages) | `~/.tsnet` |
-| Identity backup | `/workspace/.dots-tsnet-backup` |
+| dots-tailscale (Tailscale, sshd, node identity) | `/workspace/shared/.dots-tailscale` |
+| dots-tsnet (tsnet, tsapt, settings, installed packages) | `/workspace/shared/.tsnet` |
+| Identity backup | `~/.local/state/dots-tsnet` |
 | Runtime sockets and logs | `/tmp/dots-tailscale-1000` |
 
-**Why the home directory?** On 2026-10-23 at 06:49, a cleanup job on the Dots side deleted several top-level folders under `/workspace`: `/workspace/.tsnet`, `/workspace/.dots-tailscale` and a clone of this repository were gone, while a `.deb` file in the same place, the `scratch` and `shared` folders, and the home directory survived. The VM was not rebooted, so tailscaled and Chrome kept running from deleted files for hours and then failed once they needed new connections. The Tailscale state file was deleted too, so the machine could not come back with the same identity. Nothing public says what this cleanup removes, so dots-tsnet installs where everything survived: the home directory. The observations are in [How it works](docs/how-it-works.md#dots-workspace-cleanup-and-install-location).
+Where `/workspace/shared` does not exist, dots-tsnet installs into the home directory (`~/.tsnet`, `~/.dots-tailscale`) and keeps the backup in `/workspace/shared/.dots-tsnet-backup`.
 
-**Backups.** dots-tailscale assumes `/workspace` survives an environment change and makes no promise about the home directory. So dots-tsnet copies the node identity (Tailscale state file), the SSH host key, `authorized_keys`, `tsnet.conf` and the list of installed packages to the other side, `/workspace/.dots-tsnet-backup`. Changed files are copied whenever a new shell starts and whenever you run `tsnet start` or `tsnet status`. If the cleanup deletes the backup, the next shell recreates it, and if either side is lost, `install.sh` restores from the other. The backup contains Tailscale private keys; never copy it to another machine.
+**Why `/workspace/shared`?** On 2026-10-23 at 06:49, the Dots scratch cleanup deleted several top-level folders under `/workspace`. It left a `v1` record in `/workspace/.scratch-cleaning/<task id>`. `/workspace/.tsnet`, `/workspace/.dots-tailscale` and a clone of this repository were gone, while the Dots task folder `/workspace/scratch` and the home directory survived. In the same second, the same job created `/workspace/shared`, and the Dots desktop configuration (`/etc/orbit-os/config.toml`) says user overrides persist in `/workspace/shared/.orbit-os`. The home directory also survived this cleanup, but everything in it was created after the VM booted, so nothing shows it outlives a VM replacement. dots-tsnet therefore installs where Dots itself keeps data it means to persist. The observations are in [How it works](docs/how-it-works.md#dots-storage-and-install-location).
 
-**Prefer `/workspace`?** Choose the location at install time. The backup then goes to your home directory (`~/.local/state/dots-tsnet`).
+**Backups.** dots-tsnet copies the node identity (Tailscale state file), the SSH host key, `authorized_keys`, `tsnet.conf` and the list of installed packages to the other side, the home directory (`~/.local/state/dots-tsnet`). Changed files are copied whenever a new shell starts and whenever you run `tsnet start` or `tsnet status`. If either side is lost, `install.sh` restores from the other, and it also looks in the backup location older versions used (`/workspace/.dots-tsnet-backup`). The backup contains Tailscale private keys; never copy it to another machine.
+
+**Keep your work outside Dots too.** The install and its backup sit on the same disk, so if the whole Dots environment goes back to an older snapshot, both can go back with it. Several people report recent work disappearing while older files remained ([openai/codex#52765](https://github.com/openai/codex/issues/52765)). dots-tsnet itself can be reinstalled from this repository, and a lost identity only means logging in again with `--new-identity`. Work you create on Dots is safer with a copy outside Dots, such as Google Drive or the ChatGPT Library. The Dots sandbox has no `/dev/fuse`, so Google Drive cannot be mounted, but `rclone copy` can copy to it on a schedule.
+
+**Prefer another location?** Choose it at install time. With a home-directory install, the backup goes to `/workspace/shared/.dots-tsnet-backup`.
 
 ```bash
-TSNET_DIR=/workspace/.tsnet DOTS_TS_DIR=/workspace/.dots-tailscale bash install.sh --exit-node {exit-node}
+TSNET_DIR=~/.tsnet DOTS_TS_DIR=~/.dots-tailscale bash install.sh --exit-node {exit-node}
 ```
 
 ## Speed
@@ -193,11 +197,11 @@ On Dots, Tailscale never gets a direct (peer-to-peer) connection, so all traffic
 
 Back-to-back downloads with identical settings differed by up to two times, and the first download after a tailscaled restart tended to be slow. Why direct connections fail is explained in [How it works](docs/how-it-works.md#why-traffic-is-always-relayed-and-how-fast-it-is).
 
-**Want fast apt downloads?** Set `TSNET_APT_PROXY=http://browser-proxy:8889` in `~/.tsnet/tsnet.conf`. Only apt then uses the platform proxy; pip, curl and the rest still go through `{exit-node}`. The trade-off is that the platform proxy inspects HTTPS, so the platform can see which packages you download. apt verifies package GPG signatures, so tampered packages would be rejected at install time.
+**Want fast apt downloads?** Set `TSNET_APT_PROXY=http://browser-proxy:8889` in `/workspace/shared/.tsnet/tsnet.conf`. Only apt then uses the platform proxy; pip, curl and the rest still go through `{exit-node}`. The trade-off is that the platform proxy inspects HTTPS, so the platform can see which packages you download. apt verifies package GPG signatures, so tampered packages would be rejected at install time.
 
 ## Settings
 
-The settings file is `~/.tsnet/tsnet.conf`, in `NAME=value` form. An environment variable with the same name takes precedence.
+The settings file is `/workspace/shared/.tsnet/tsnet.conf`, in `NAME=value` form. An environment variable with the same name takes precedence.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -214,7 +218,7 @@ The settings file is `~/.tsnet/tsnet.conf`, in `NAME=value` form. An environment
 | `TSNET_IDENTITY_BACKUP` | `1` | Back up the node identity, SSH host key and settings to the location opposite the install |
 | `TSNET_SSH_PTY_FIX` | `1` | Interactive SSH (PTY) fix. Without it, terminal-app SSH sessions may drop right after login |
 
-The install locations are chosen at install time with the environment variables `TSNET_DIR` (default `~/.tsnet`) and `DOTS_TS_DIR` (default `~/.dots-tailscale`); the backup location with `TSNET_BACKUP_DIR`.
+The install locations are chosen at install time with the environment variables `TSNET_DIR` (default `/workspace/shared/.tsnet`) and `DOTS_TS_DIR` (default `/workspace/shared/.dots-tailscale`); the backup location with `TSNET_BACKUP_DIR`. Without `/workspace/shared`, the defaults are in the home directory.
 
 ## Reaching your tailnet without an exit node
 
@@ -226,18 +230,18 @@ An exit node only decides how traffic reaches the **internet**. Traffic between 
 ```bash
 curl -x http://127.0.0.1:1056 http://{tailnet-host}:{port}/
 curl --socks5-hostname 127.0.0.1:1055 http://{tailnet-host}:{port}/
-ssh -F /dev/null -o ProxyCommand="$HOME/.dots-tailscale/dots-ts cli nc %h %p" {user}@{tailnet-host}
+ssh -F /dev/null -o ProxyCommand="/workspace/shared/.dots-tailscale/dots-ts cli nc %h %p" {user}@{tailnet-host}
 ```
 
 `{tailnet-host}` is the machine name or `100.x.y.z` address of the tailnet device you want to reach. More in [How it works](docs/how-it-works.md#reaching-your-tailnet-without-an-exit-node).
 
 ## After a VM replacement or a wiped install
 
-**After a VM replacement.** If your home directory survived, your settings and packages are still there. Just bring Tailscale back up:
+**After a VM replacement.** If `/workspace` survived, your settings and packages are still there. Just bring Tailscale back up, and recreate the `~/.bashrc` hook if the home directory was reset:
 
 ```bash
-~/.tsnet/bin/tsnet start          # starts Tailscale, SSH and the local proxies
-~/.tsnet/bin/tsnet install-hook   # only if the ~/.bashrc hook is gone
+/workspace/shared/.tsnet/bin/tsnet start          # starts Tailscale, SSH and the local proxies
+/workspace/shared/.tsnet/bin/tsnet install-hook   # only if the ~/.bashrc hook is gone
 ```
 
 `tsnet start` runs dots-tailscale's `start.sh` and passes along `TSNET_TAILSCALED_ENV` and the interactive SSH fix.
@@ -281,11 +285,11 @@ It depends on the environment. These switches turn off offloads on the UDP socke
 | Public IP check fails or times out | `{exit-node}` is off or not approved in the admin console. List candidates with `tsnet exit-node`; use `tsnet_off` to bypass the proxy for now |
 | `tsnet` not found, or Chrome and apt suddenly fail with `ERR_TUNNEL_CONNECTION_FAILED` or proxy 500 errors | The install folders may have been deleted. Follow [After a VM replacement or a wiped install](#after-a-vm-replacement-or-a-wiped-install) |
 | Start stops with `previously authenticated state is missing` | The node identity file is gone. With a backup, `tsnet start` or `install.sh` restores it automatically; without one, run `tsnet start --new-identity` |
-| `apt-get` still points to `/usr/local/bin/apt-get` | This shell did not load the dots-tsnet environment. Run `source ~/.bashrc`, or `~/.tsnet/bin/tsnet install-hook` |
+| `apt-get` still points to `/usr/local/bin/apt-get` | This shell did not load the dots-tsnet environment. Run `source ~/.bashrc`, or `/workspace/shared/.tsnet/bin/tsnet install-hook` |
 | An installed program cannot find its data files | tsapt unpacks files elsewhere and does not run install scripts. See [tsapt limits](docs/tsapt.md#limits) |
 | `dots-ts doctor` says `unhealthy` with `source integrity: mismatch` | A dots-tailscale file such as `setup.sh` was edited by hand. `tsnet doctor --fix` moves any `TS_` settings you added into `tsnet.conf` and restores the original |
 | Terminal-app SSH closes right away with `closed by remote host` (`ssh -T` works) | sshd fails to change the PTY's owner. Make sure `TSNET_SSH_PTY_FIX=1` (the default) and run `tsnet start`; sshd comes back with the fix |
-| SSH refuses with `REMOTE HOST IDENTIFICATION HAS CHANGED` | The SSH host key changed during a reinstall. Check the fingerprint in the Dots desktop terminal with `ssh-keygen -lf ~/.dots-tailscale/sshd/ssh_host_ed25519_key.pub`, then run `ssh-keygen -R {Dots machine name}` on your computer |
+| SSH refuses with `REMOTE HOST IDENTIFICATION HAS CHANGED` | The SSH host key changed during a reinstall. Check the fingerprint in the Dots desktop terminal with `ssh-keygen -lf /workspace/shared/.dots-tailscale/sshd/ssh_host_ed25519_key.pub`, then run `ssh-keygen -R {Dots machine name}` on your computer |
 | `ssh` on Dots fails with `Bad owner or permissions on /etc/ssh/ssh_config.d/...` | A permission problem in the Dots image's system SSH config. Skip it with `ssh -F /dev/null ...` |
 
 ## Uninstall
@@ -296,7 +300,7 @@ bash uninstall.sh                  # removes everything, including installed pac
 bash uninstall.sh --keep-packages  # keeps installed packages and the apt cache
 ```
 
-dots-tailscale, your Tailscale login and the backup (`/workspace/.dots-tsnet-backup`) are left alone. To stop advertising the exit node, run `tailscale set --advertise-exit-node=false` on that device.
+dots-tailscale, your Tailscale login and the backup (`~/.local/state/dots-tsnet`) are left alone. To stop advertising the exit node, run `tailscale set --advertise-exit-node=false` on that device.
 
 ## Further reading
 
@@ -307,7 +311,7 @@ dots-tailscale, your Tailscale login and the backup (`/workspace/.dots-tsnet-bac
 
 ## Tested on
 
-2026-10-22 and 23, on a Dots cloud computer (Debian 13 trixie, x86_64) with dots-tailscale v0.4.0 (Tailscale 1.102.4). Moving a `/workspace` install into the home directory was also tested on a live Dots computer the same day. Two kinds of `{exit-node}` were tested: a Windows 11 PC (Tailscale 1.102.2) and an OPNsense firewall (FreeBSD 14.3, Tailscale 1.92.2).
+2026-10-22 to 24, on a Dots cloud computer (Debian 13 trixie, x86_64) with dots-tailscale v0.4.0 (Tailscale 1.102.4). Moving older installs (`/workspace` to the home directory, and the home directory to `/workspace/shared`) was also tested on a live Dots computer. Two kinds of `{exit-node}` were tested: a Windows 11 PC (Tailscale 1.102.2) and an OPNsense firewall (FreeBSD 14.3, Tailscale 1.92.2).
 
 ## License
 

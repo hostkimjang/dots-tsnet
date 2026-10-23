@@ -12,13 +12,25 @@ tsnet_load_conf() {
   done < "$file"
 }
 
-tsnet_defaults() {
-  local home="${HOME:-}"
+# 기본 설치 위치의 부모 폴더입니다. /workspace/shared 가 있으면 그곳, 없으면 홈 폴더입니다.
+# Dots 의 scratch 정리 작업은 /workspace 최상위 폴더를 지우면서 /workspace/shared 는 새로 만들었고,
+# Dots 데스크톱도 사용자 설정을 이곳에 보존합니다(/etc/orbit-os/config.toml). 테스트에서는 TSNET_SHARED_BASE 로 바꿉니다.
+tsnet_install_base() {
+  local home="${HOME:-}" shared="${TSNET_SHARED_BASE:-/workspace/shared}"
   # HOME 이 비어 있으면 bash 는 ~ 를 계정 정보의 홈 디렉터리로 풉니다.
   [ -n "$home" ] || home="$(cd ~ 2> /dev/null && pwd)" || true
-  # 기본 설치 위치는 홈 폴더입니다. 2026-10-23 Dots 정리 작업이 /workspace 최상위 폴더를 지웠을 때 홈 폴더는 남았습니다.
-  : "${TSNET_DIR:=$home/.tsnet}"
-  : "${DOTS_TS_DIR:=$home/.dots-tailscale}"
+  if [ -d "$shared" ] && [ -w "$shared" ]; then
+    printf '%s\n' "$shared"
+  else
+    printf '%s\n' "$home"
+  fi
+}
+
+tsnet_defaults() {
+  local base
+  base="$(tsnet_install_base)"
+  : "${TSNET_DIR:=$base/.tsnet}"
+  : "${DOTS_TS_DIR:=$base/.dots-tailscale}"
   : "${TSNET_EXIT_NODE:=}"
   : "${TSNET_SOCKS_PORT:=1055}"
   : "${TSNET_HTTP_PORT:=1056}"
@@ -216,18 +228,44 @@ tsnet_identity_lost() {
   [ -e "$DOTS_TS_DIR/authenticated" ] && [ ! -s "$DOTS_TS_DIR/state/tailscaled.state" ]
 }
 
-# 백업 위치입니다. 설치와 다른 쪽에 둡니다: 홈 폴더에 설치했으면 /workspace, /workspace 에 설치했으면 홈 폴더.
-# Dots 정리 작업은 /workspace 최상위 폴더를 지웠고, dots-tailscale 은 VM 이 바뀔 때 홈 폴더가 남는지 장담하지 않기
-# 때문입니다. 여기에는 Tailscale 개인키가 들어 있으니 다른 컴퓨터로 복사하거나 공유하면 안 됩니다.
+# 백업 위치입니다. 설치와 다른 쪽에 둡니다: /workspace(/workspace/shared 포함)에 설치했으면 홈 폴더,
+# 홈 폴더에 설치했으면 /workspace/shared. 한쪽이 지워져도 다른 쪽에서 되살리기 위해서입니다.
+# 여기에는 Tailscale 개인키가 들어 있으니 다른 컴퓨터로 복사하거나 공유하면 안 됩니다.
 tsnet_backup_dir() {
   if [ -n "${TSNET_BACKUP_DIR:-}" ]; then
     printf '%s\n' "$TSNET_BACKUP_DIR"
     return 0
   fi
   case "$DOTS_TS_DIR/" in
-    "${HOME:-/nonexistent}"/*) printf '%s\n' /workspace/.dots-tsnet-backup ;;
+    "${HOME:-/nonexistent}"/*) printf '%s\n' "${TSNET_SHARED_BASE:-/workspace/shared}/.dots-tsnet-backup" ;;
     *) printf '%s\n' "${HOME:-}/.local/state/dots-tsnet" ;;
   esac
+}
+
+# 되살릴 때 찾아볼 백업 위치입니다. 지금 위치를 먼저 보고, 예전 버전이 쓰던 위치도 봅니다
+# (0.1.2 는 홈 폴더 설치의 백업을 /workspace/.dots-tsnet-backup 에 뒀습니다).
+tsnet_backup_candidates() {
+  local primary d
+  primary="$(tsnet_backup_dir)"
+  printf '%s\n' "$primary"
+  [ -z "${TSNET_BACKUP_DIR:-}" ] || return 0
+  for d in "${HOME:-/nonexistent}/.local/state/dots-tsnet" "${TSNET_SHARED_BASE:-/workspace/shared}/.dots-tsnet-backup" \
+    /workspace/.dots-tsnet-backup; do
+    [ "$d" = "$primary" ] || printf '%s\n' "$d"
+  done
+}
+
+# 백업 후보 가운데 이름이 name 인 파일이 처음 있는 경로를 출력합니다. 내 소유가 아닌 폴더와 심볼릭 링크는 건너뜁니다.
+tsnet_backup_find() {
+  local dir
+  while IFS= read -r dir; do
+    [ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ] || continue
+    if [ -s "$dir/$1" ] && [ ! -L "$dir/$1" ]; then
+      printf '%s\n' "$dir/$1"
+      return 0
+    fi
+  done <<< "$(tsnet_backup_candidates)"
+  return 1
 }
 
 # src 가 dst 보다 새것이면 권한을 지켜 복사합니다. 심볼릭 링크는 따라가지 않습니다.
@@ -261,24 +299,21 @@ tsnet_backup_identity() {
 # 지워진 Tailscale 상태 파일, SSH 호스트 키, authorized_keys 를 백업에서 되돌립니다.
 # 비어 있는 자리만 채우고, 이미 있는 파일은 건드리지 않습니다. 되돌린 것이 있으면 한 줄로 알립니다.
 tsnet_restore_identity() {
-  local dir restored=""
-  dir="$(tsnet_backup_dir)"
-  [ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ] || return 0
-  if [ ! -s "$DOTS_TS_DIR/state/tailscaled.state" ] && [ -s "$dir/tailscaled.state" ]; then
-    (umask 077 && mkdir -p -- "$DOTS_TS_DIR/state" && cp -p -- "$dir/tailscaled.state" "$DOTS_TS_DIR/state/tailscaled.state") &&
-      restored="$restored Tailscale 상태"
+  local restored="" used="" f
+  if [ ! -s "$DOTS_TS_DIR/state/tailscaled.state" ] && f="$(tsnet_backup_find tailscaled.state)"; then
+    (umask 077 && mkdir -p -- "$DOTS_TS_DIR/state" && cp -p -- "$f" "$DOTS_TS_DIR/state/tailscaled.state") &&
+      restored="$restored, Tailscale 상태" used="$(dirname -- "$f")"
   fi
   if [ ! -e "$DOTS_TS_DIR/sshd/ssh_host_ed25519_key" ] && [ ! -e "$DOTS_TS_DIR/sshd/ssh_host_ed25519_key.pub" ] &&
-    [ -s "$dir/ssh_host_ed25519_key" ] && [ -s "$dir/ssh_host_ed25519_key.pub" ]; then
-    (umask 077 && mkdir -p -- "$DOTS_TS_DIR/sshd" &&
-      cp -p -- "$dir/ssh_host_ed25519_key" "$dir/ssh_host_ed25519_key.pub" "$DOTS_TS_DIR/sshd/") &&
-      restored="$restored, SSH 호스트 키"
+    f="$(tsnet_backup_find ssh_host_ed25519_key)" && [ -s "$f.pub" ] && [ ! -L "$f.pub" ]; then
+    (umask 077 && mkdir -p -- "$DOTS_TS_DIR/sshd" && cp -p -- "$f" "$f.pub" "$DOTS_TS_DIR/sshd/") &&
+      restored="$restored, SSH 호스트 키" used="${used:-$(dirname -- "$f")}"
   fi
-  if [ ! -e "$DOTS_TS_DIR/sshd/authorized_keys" ] && [ -s "$dir/authorized_keys" ]; then
-    (umask 077 && mkdir -p -- "$DOTS_TS_DIR/sshd" && cp -p -- "$dir/authorized_keys" "$DOTS_TS_DIR/sshd/authorized_keys") &&
-      restored="$restored, authorized_keys"
+  if [ ! -e "$DOTS_TS_DIR/sshd/authorized_keys" ] && f="$(tsnet_backup_find authorized_keys)"; then
+    (umask 077 && mkdir -p -- "$DOTS_TS_DIR/sshd" && cp -p -- "$f" "$DOTS_TS_DIR/sshd/authorized_keys") &&
+      restored="$restored, authorized_keys" used="${used:-$(dirname -- "$f")}"
   fi
-  if [ -n "$restored" ]; then printf '백업(%s)에서 되돌렸습니다:%s\n' "$dir" "${restored#,}"; fi
+  if [ -n "$restored" ]; then printf '백업(%s)에서 되돌렸습니다:%s\n' "$used" "${restored#,}"; fi
 }
 
 tsnet_sha256() { sha256sum -- "$1" 2> /dev/null | cut -d ' ' -f 1; }

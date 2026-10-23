@@ -263,7 +263,7 @@ def check_proxy():
 
 
 def warn_without_exit_node():
-    dots_ts = Path(CONF.get("DOTS_TS_DIR", str(Path.home() / ".dots-tailscale"))) / "dots-ts"
+    dots_ts = Path(CONF.get("DOTS_TS_DIR") or TSNET_DIR.parent / ".dots-tailscale") / "dots-ts"
     try:
         out = run([str(dots_ts), "cli", "status", "--json"], capture=True, stderr=subprocess.DEVNULL,
                   timeout=8).stdout

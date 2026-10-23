@@ -1,5 +1,16 @@
 # 변경 기록
 
+## 0.1.3 - 2026-10-24
+
+Dots 저장소 구조를 다시 살펴보고, 설치 위치를 Dots 저장소 정리가 지우지 않는 `/workspace/shared`로 옮겼습니다.
+
+- 설치 위치: `/workspace/shared/.tsnet`, `/workspace/shared/.dots-tailscale`. 2026-10-23의 scratch 정리 작업은 `/workspace` 최상위 폴더를 지우면서 `/workspace/shared`는 새로 만들었고, Dots 데스크톱 설정(`/etc/orbit-os/config.toml`)도 사용자 설정을 이곳에 보존합니다. `/workspace/shared`가 없으면 홈 폴더에 설치합니다.
+- 백업: 설치 반대편인 홈 폴더(`~/.local/state/dots-tsnet`)에 둡니다. 0.1.2의 백업 위치(`/workspace/.dots-tsnet-backup`)는 정리 작업이 지우는 자리였습니다. 되돌릴 때는 예전 백업 위치도 찾아봅니다.
+- `install.sh`: 홈 폴더(0.1.2)나 `/workspace`(0.1.1 이하)의 설치를 같은 Tailscale 신원으로 `/workspace/shared`로 옮기고, 옮긴 뒤 예전 백업 위치를 지웁니다.
+- `uninstall.sh`, `tests/smoke.sh`, `tsapt`: 새 위치와 예전 위치를 모두 찾습니다.
+- 문서: Dots 저장소 구조(같은 디스크에 있는 `/workspace`와 홈 폴더, 메모리에 있는 `/`와 `/tmp`), 정리 작업 기록, 환경 전체가 예전 스냅숏으로 돌아간 사례(openai/codex#52765), Google Drive를 마운트할 수 없는 이유와 `rclone copy` 백업을 더했습니다.
+- 테스트: 38개. 기본 설치 위치 선택과 예전 백업 위치에서 되돌리기를 더했습니다.
+
 ## 0.1.2 - 2026-10-23
 
 Dots 정리 작업이 설치 폴더를 지운 일을 겪고, 설치 위치를 홈 폴더로 옮기고 복구 경로를 더했습니다. GSO·GRO와 UDP에 관한 틀린 서술도 측정값으로 고쳤습니다.

@@ -10,7 +10,7 @@ This page explains what actually runs on the Dots computer, why each piece is th
 - **Do I need an exit node to reach my tailnet?** No. SSH into Dots and connections from Dots to your other machines work without one. An exit node only matters when you want Dots's internet downloads to leave through your own network.
 - **Is the connection direct (peer-to-peer)?** No. Outbound UDP from Dots only seems to pass when the destination port is 3478, and Tailscale peers listen on other ports, so no direct path forms. Everything is relayed through Tailscale's DERP servers, at a few hundred kB/s per connection.
 - **Are there keys on the command line?** No. The node logs in once with `tailscale up` (a login URL or an auth key file), and its identity is stored in the state directory.
-- **Where does it install?** In the home directory (`~/.dots-tailscale`, `~/.tsnet`), because a Dots cleanup job once deleted top-level folders under `/workspace`. See [Dots workspace cleanup and install location](#dots-workspace-cleanup-and-install-location).
+- **Where does it install?** In `/workspace/shared` (`.dots-tailscale`, `.tsnet`). That folder survives the Dots scratch cleanup that deletes top-level folders under `/workspace`, and the Dots desktop keeps its own user settings there. See [Dots storage and install location](#dots-storage-and-install-location).
 
 ## What a Dots terminal can reach
 
@@ -52,15 +52,15 @@ flowchart LR
 
 ## The tailscaled startup command
 
-This is the command dots-tailscale v0.4.0 runs, plus the two proxy flags that dots-tsnet adds at the end. Paths assume the default install location (`/home/agent/.dots-tailscale`). There are no keys in it.
+This is the command dots-tailscale v0.4.0 runs, plus the two proxy flags that dots-tsnet adds at the end. Paths assume the default install location (`/workspace/shared/.dots-tailscale`). There are no keys in it.
 
 ```bash
 HTTPS_PROXY=http://127.0.0.1:18089 \
 HTTP_PROXY=http://127.0.0.1:18089 \
-SSL_CERT_FILE=/home/agent/.dots-tailscale/shim/bundle.crt \
-/home/agent/.dots-tailscale/tailscaled \
+SSL_CERT_FILE=/workspace/shared/.dots-tailscale/shim/bundle.crt \
+/workspace/shared/.dots-tailscale/tailscaled \
   --tun=userspace-networking \
-  --statedir=/home/agent/.dots-tailscale/state \
+  --statedir=/workspace/shared/.dots-tailscale/state \
   --socket=/tmp/dots-tailscale-1000/tailscaled.sock \
   --port=0 \
   --socks5-server=127.0.0.1:1055 \
@@ -72,7 +72,7 @@ What each part is for:
 - `HTTPS_PROXY`, `HTTP_PROXY`: send tailscaled's own HTTPS connections (control plane, DERP, logs) to the shim. Only tailscaled gets these values; your shell does not.
 - `SSL_CERT_FILE`: the system CA list plus a small local CA created at install time. tailscaled needs it because the shim presents certificates signed by that local CA.
 - `--tun=userspace-networking`: there is no root and no `/dev/net/tun`, so Tailscale runs its network stack inside the process.
-- `--statedir`: holds the node identity. dots-tsnet keeps it in the home directory and also copies the state file to `/workspace/.dots-tsnet-backup`. Never copy this directory to two running machines.
+- `--statedir`: holds the node identity. dots-tsnet keeps it under `/workspace/shared` and also copies the state file to the home directory (`~/.local/state/dots-tsnet`). Never copy this directory to two running machines.
 - `--socket`: the control socket lives in a per-user runtime directory (`1000` is the uid).
 - `--port=0`: tailscaled picks any local UDP port. Dots appears to filter on the destination port (3478), not the source port, so changing this does not help direct connections.
 - `--socks5-server`, `--outbound-http-proxy-listen`: local proxies for your programs, loopback only. dots-tailscale leaves them off by default; dots-tsnet turns them on.
@@ -80,23 +80,23 @@ What each part is for:
 The other two processes:
 
 ```bash
-UPSTREAM_HOST=browser-proxy UPSTREAM_PORT=8889 python3 /home/agent/.dots-tailscale/shim/shim.py
-/usr/sbin/sshd -f /home/agent/.dots-tailscale/sshd/sshd_config   # 127.0.0.1:22, public keys only
+UPSTREAM_HOST=browser-proxy UPSTREAM_PORT=8889 python3 /workspace/shared/.dots-tailscale/shim/shim.py
+/usr/sbin/sshd -f /workspace/shared/.dots-tailscale/sshd/sshd_config   # 127.0.0.1:22, public keys only
 ```
 
-`tsnet start` and `install.sh` run dots-tailscale's `start.sh` with the `TS_` values from `TSNET_TAILSCALED_ENV` and with the interactive SSH fix (`LD_PRELOAD=/home/agent/.tsnet/lib/pty_chown_shim.so`), so all three processes carry those values in their environment.
+`tsnet start` and `install.sh` run dots-tailscale's `start.sh` with the `TS_` values from `TSNET_TAILSCALED_ENV` and with the interactive SSH fix (`LD_PRELOAD=/workspace/shared/.tsnet/lib/pty_chown_shim.so`), so all three processes carry those values in their environment.
 
 Logging in happens once, and no key is ever placed on a command line:
 
 ```bash
-bash ~/.dots-tailscale/start.sh login     # runs "tailscale up --hostname=dots-sandbox --ssh=false" and prints a login URL
-DOTS_TS_AUTH_KEY_FILE=/absolute/path/to/key bash ~/.dots-tailscale/start.sh auth   # or an auth key read from a file (mode 600)
+bash /workspace/shared/.dots-tailscale/start.sh login     # runs "tailscale up --hostname=dots-sandbox --ssh=false" and prints a login URL
+DOTS_TS_AUTH_KEY_FILE=/absolute/path/to/key bash /workspace/shared/.dots-tailscale/start.sh auth   # or an auth key read from a file (mode 600)
 ```
 
 To see the command and environment on your own Dots computer:
 
 ```bash
-pid=$(pgrep -f "^$HOME/.dots-tailscale/tailscaled ")
+pid=$(pgrep -f "^/workspace/shared/.dots-tailscale/tailscaled ")
 tr '\0' ' ' < /proc/$pid/cmdline; echo
 tr '\0' '\n' < /proc/$pid/environ | grep -E '^(TS_|HTTPS?_PROXY|SSL_CERT_FILE|LD_PRELOAD)'
 ```
@@ -127,7 +127,7 @@ dots-tsnet does not modify the shim. The source is [shim.py in abruption/dots-ta
 
 An exit node is only about the internet. For traffic between Dots and your own machines, you need nothing beyond the base dots-tailscale setup and a tailnet policy that allows it.
 
-**Into Dots.** SSH from any device in your tailnet: `ssh agent@dots-sandbox`, with your public key in `~/.dots-tailscale/sshd/authorized_keys`. In userspace mode, tailscaled forwards incoming tailnet connections to local services, here `127.0.0.1:22`.
+**Into Dots.** SSH from any device in your tailnet: `ssh agent@dots-sandbox`, with your public key in `/workspace/shared/.dots-tailscale/sshd/authorized_keys`. In userspace mode, tailscaled forwards incoming tailnet connections to local services, here `127.0.0.1:22`.
 
 **Out of Dots.** There is no TUN interface, so `curl http://100.x.y.z` on its own goes nowhere. Programs have to go through tailscaled:
 
@@ -139,7 +139,7 @@ curl -x http://127.0.0.1:1056 http://{tailnet-host}:{port}/
 curl --socks5-hostname 127.0.0.1:1055 http://{tailnet-host}:{port}/
 
 # Plain TCP, for example SSH to another tailnet machine
-ssh -F /dev/null -o ProxyCommand="$HOME/.dots-tailscale/dots-ts cli nc %h %p" {user}@{tailnet-host}
+ssh -F /dev/null -o ProxyCommand="/workspace/shared/.dots-tailscale/dots-ts cli nc %h %p" {user}@{tailnet-host}
 ```
 
 Replace `{tailnet-host}` with a machine name or `100.x.y.z` address, and `{port}` and `{user}` with your own values.
@@ -149,7 +149,7 @@ We tested this with the exit node turned off. HTTP requests through both proxies
 Things to know:
 
 - `-F /dev/null` is there because the Dots image ships `/etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf` with permissions OpenSSH rejects.
-- Subnet routes advertised by other machines are not accepted by default (`RouteAll: false`). `~/.dots-tailscale/dots-ts cli set --accept-routes` should enable them; we have not tested it.
+- Subnet routes advertised by other machines are not accepted by default (`RouteAll: false`). `/workspace/shared/.dots-tailscale/dots-ts cli set --accept-routes` should enable them; we have not tested it.
 - Your tailnet policy must allow the Dots machine (default name `dots-sandbox`) to reach those machines and ports.
 - dots-tailscale has a careful [private HTTP API recipe](https://github.com/abruption/dots-tailscale/blob/main/docs/private-http-api.md) with tags, grants and bounded requests.
 
@@ -209,7 +209,7 @@ Turning them off did not make anything faster. The "on" phase was about 1.5 time
 
 **When they could matter on Dots.** If a direct UDP path ever forms (for example with the UDP 3478 approach above), these switches would apply to real traffic. In that case, measure with Tailscale's defaults first and turn them off only if you see a problem.
 
-**How to turn them off without editing dots-tailscale.** Put them in `~/.tsnet/tsnet.conf`:
+**How to turn them off without editing dots-tailscale.** Put them in `/workspace/shared/.tsnet/tsnet.conf`:
 
 ```text
 TSNET_TAILSCALED_ENV=TS_DEBUG_DISABLE_UDP_GSO=true TS_DEBUG_DISABLE_UDP_GRO=true
@@ -217,7 +217,7 @@ TSNET_TAILSCALED_ENV=TS_DEBUG_DISABLE_UDP_GSO=true TS_DEBUG_DISABLE_UDP_GRO=true
 
 `tsnet start` (and `install.sh`) pass these to tailscaled whenever it is freshly started, for example after a VM replacement. Only `TS_NAME=value` items are accepted.
 
-**Applying them right away.** If tailscaled is already running, `tsnet start` reuses it. To apply new values now, run `tsnet restart`. Over SSH the connection drops for a minute or two, so use `tsnet restart --detach`, then reconnect and check `tsnet status` and `~/.tsnet/restart.log`. `tsnet restart`:
+**Applying them right away.** If tailscaled is already running, `tsnet start` reuses it. To apply new values now, run `tsnet restart`. Over SSH the connection drops for a minute or two, so use `tsnet restart --detach`, then reconnect and check `tsnet status` and `/workspace/shared/.tsnet/restart.log`. `tsnet restart`:
 
 1. stops only this install's tailscaled;
 2. waits up to 90 seconds for the proxy ports to free up, because dots-tailscale refuses to start with "occupied port" while connections of the old daemon are still in TIME_WAIT;
@@ -226,35 +226,45 @@ TSNET_TAILSCALED_ENV=TS_DEBUG_DISABLE_UDP_GSO=true TS_DEBUG_DISABLE_UDP_GRO=true
 
 **How to check.** `tsnet status` prints them on the `[tailscaled]` line, and the `/proc` command from the startup section shows them as well.
 
-**Edited `setup.sh` by hand?** dots-tailscale keeps SHA-256 values for its own files. If you add the variables to `~/.dots-tailscale/setup.sh` directly, `dots-ts version` reports `source integrity: mismatch (modified_or_mixed)`, `dots-ts doctor` reports `overall: unhealthy`, and dots-tailscale's updater refuses to update a modified install. `tsnet doctor --fix` moves the `TS_` settings you added into `TSNET_TAILSCALED_ENV` in `tsnet.conf` and restores the original `setup.sh`, checked against the install record's SHA-256. Your edited file is kept in `~/.tsnet/backup/`, and the running tailscaled is not restarted.
+**Edited `setup.sh` by hand?** dots-tailscale keeps SHA-256 values for its own files. If you add the variables to `/workspace/shared/.dots-tailscale/setup.sh` directly, `dots-ts version` reports `source integrity: mismatch (modified_or_mixed)`, `dots-ts doctor` reports `overall: unhealthy`, and dots-tailscale's updater refuses to update a modified install. `tsnet doctor --fix` moves the `TS_` settings you added into `TSNET_TAILSCALED_ENV` in `tsnet.conf` and restores the original `setup.sh`, checked against the install record's SHA-256. Your edited file is kept in `/workspace/shared/.tsnet/backup/`, and the running tailscaled is not restarted.
 
-## Dots workspace cleanup and install location
+## Dots storage and install location
 
-Up to 0.1.1, dots-tsnet followed dots-tailscale's default and installed under `/workspace`. Because of what we saw on 2026-10-23, it installs into the home directory from 0.1.2 on.
+Up to 0.1.1, dots-tsnet followed dots-tailscale's default and installed directly under `/workspace`, and 0.1.2 installed into the home directory. After a closer look at how Dots storage is laid out, it installs into `/workspace/shared` from 0.1.3 on.
 
-**What happened.** At 06:49:37 (Korea time) on 2026-10-23, a cleanup job on the Dots side deleted several top-level folders under `/workspace`. The VM had been up since 16:19 the day before and was not rebooted.
+**How Dots storage is laid out.** The Dots desktop and terminals run inside a bubblewrap sandbox with every capability dropped. `/workspace` and the home directory are both bound from the same disk (an overlay); the home directory is that disk's `/home/agent/.local/share/orbit-native` mounted at `/home/agent`. The root (`/`) and `/tmp` live in memory (tmpfs) and vanish with the VM. Under `/workspace` sit the Dots task folders (`scratch/<task id>`) and `shared`, and the Dots documentation tells agents to keep task files in `/workspace/scratch/<task-directory>`.
 
-- In the same second, `/workspace/.scratch-cleaning/92af8521d3e5` (containing the single line `v1`) and `/workspace/shared/.orbit-os` were created. A folder with the same ID exists under `/workspace/scratch/`.
+**What happened.** At 06:49:37 (Korea time) on 2026-10-23, the Dots scratch cleanup deleted several top-level folders under `/workspace`. The VM had been up since 16:19 the day before and was not rebooted.
+
+- In the same second, `/workspace/.scratch-cleaning/92af8521d3e5` (containing the single line `v1`), `/workspace/shared` and `/workspace/shared/.orbit-os` were created. `92af8521d3e5` matches the name of the Dots task folder under `/workspace/scratch/`.
 - Deleted: `/workspace/.tsnet`, `/workspace/.dots-tailscale` and `/workspace/dots-tsnet` (a clone of this repository). A Chrome process that kept running showed its executable as `/workspace/.scratch-cleaning-<hash>-<number>-<random>/root/opt/google/chrome/chrome (deleted)`, so the folder appears to have been renamed and then removed.
-- Kept: a regular `.deb` file in the same place, `scratch`, `shared`, the image's own `.agents`, `.codex` and `.git`, and the whole home directory.
+- Kept: a regular `.deb` file in the same place, `scratch` (with task files going back to early October), the image's own `.agents`, `.codex` and `.git`, and the whole home directory.
 - Afterwards: tailscaled, the shim, sshd and Chrome kept running from deleted files. About 11 hours later, Chrome and apt started failing with proxy errors: DNS lookups through the exit node timed out with HTTP 500, and connections straight to IP addresses timed out too. New connections apparently could not be set up from deleted files.
 - The Tailscale state file was deleted as well, so the machine could not come back with the same identity and had to be registered as a new machine.
 
-Nothing public says what this cleanup removes or how often it runs.
+**Why `/workspace/shared`?**
 
-**How dots-tsnet copes.**
+- The cleanup created it instead of deleting it.
+- The Dots desktop configuration `/etc/orbit-os/config.toml` says "User overrides persist in /workspace/shared/.orbit-os/dock.toml" and points its theme data directory at `/workspace/shared/.orbit-os/cache/xdg`. Dots keeps data it means to persist there.
+- The home directory survived this cleanup too, but every file in it was created after the VM booted at 16:19 on 2026-10-22. Unlike `/workspace/scratch`, which holds files from early October, nothing shows that the home directory outlives a VM replacement.
 
-- **It installs into the home directory.** dots-tailscale goes to `~/.dots-tailscale` and dots-tsnet, including installed packages, to `~/.tsnet`.
-- **It keeps a backup on the other side.** dots-tailscale assumes `/workspace` survives an environment change and makes no promise about the home directory. So the node identity (Tailscale state file), the SSH host key, `authorized_keys`, `tsnet.conf` and the list of installed packages are copied to `/workspace/.dots-tsnet-backup` (mode 700, files 600). Changed files are copied at every new shell, `tsnet start` and `tsnet status`, so the backup returns soon after a cleanup deletes it. It contains private keys; never move it to another machine.
+Nothing public says what the cleanup removes or how often it runs, and there is no official promise that `/workspace/shared` persists either.
+
+**When the whole environment goes back.** Separately from the cleanup, several people report their Dots environment going back to an older snapshot: recent work disappeared while older files remained ([openai/codex#52765](https://github.com/openai/codex/issues/52765)). Then `/workspace` and the home directory can go back together. Those reporters recovered from backups kept outside Dots (the ChatGPT Library, Google Drive). The Dots sandbox has no `/dev/fuse`, every capability is zero and privilege escalation is blocked (`NoNewPrivs=1`), so Google Drive cannot be mounted. Running the image's rclone as `rclone copy --update` on a schedule gives a backup that never deletes anything on Drive and never overwrites a newer file there.
+
+**What dots-tsnet does about it.**
+
+- **It installs into `/workspace/shared`.** dots-tailscale goes to `/workspace/shared/.dots-tailscale` and dots-tsnet, including installed packages, to `/workspace/shared/.tsnet`. Without `/workspace/shared`, it installs into the home directory.
+- **It keeps a backup on the other side.** The node identity (Tailscale state file), the SSH host key, `authorized_keys`, `tsnet.conf` and the list of installed packages are copied to `~/.local/state/dots-tsnet` in the home directory (mode 700, files 600), or to `/workspace/shared/.dots-tsnet-backup` for a home-directory install. Changed files are copied at every new shell, `tsnet start` and `tsnet status`. It contains private keys; never move it to another machine.
 - **It clears out processes left running from deleted files.** If tailscaled runs from a deleted executable, `tsnet start` and `install.sh` stop it together with the shim and sshd listener of the same install, remove that daemon's socket, and start fresh. Inside an SSH session they do not stop anything, since that would cut the connection; they ask you to run from the Dots desktop terminal instead.
-- **A reinstall restores from the backup.** Missing dots-tailscale files are filled in with the same version, and the node identity, SSH host key and settings come back from the backup. Without a backup it stops, like dots-tailscale does, and logs in as a new machine only when you pass `--new-identity`.
-- **Older installs are moved.** If an install exists under `/workspace`, `install.sh` moves it into the home directory: it copies the binaries, SSH keys, proxy settings and packages, stops the old tailscaled, shim and sshd, copies the state file, waits for the ports, and starts in the new place with the same identity. On failure it goes back to the `/workspace` install; on success it removes the old location and fixes desktop launchers (`~/.local/share/applications/*.desktop`) that pointed at it. On 2026-10-23 a live Dots computer went through this and kept its machine name and exit node setting.
+- **A reinstall restores from the backup.** Missing dots-tailscale files are filled in with the same version, and the node identity, SSH host key and settings come back from the backup. If the current backup location has nothing, the locations older versions used (such as `/workspace/.dots-tsnet-backup`) are checked too. Without any backup it stops, like dots-tailscale does, and logs in as a new machine only when you pass `--new-identity`.
+- **Older installs are moved.** If an install exists in the home directory (0.1.2) or under `/workspace` (0.1.1 or earlier), `install.sh` moves it into `/workspace/shared`: it copies the binaries, SSH keys, proxy settings and packages, stops the old tailscaled, shim and sshd, copies the state file, waits for the ports, and starts in the new place with the same identity. On failure it goes back to the old install; on success it removes the old location and the old backup location (`/workspace/.dots-tsnet-backup`) and fixes desktop launchers (`~/.local/share/applications/*.desktop`) that pointed at it. On 2026-10-23 a live Dots computer was moved from `/workspace` to the home directory in the evening and from the home directory to `/workspace/shared` later that night, keeping its machine name and exit node setting both times.
 
 ## Interactive SSH (PTY) fix
 
 **The problem.** On a Dots computer, `/dev/pts` entries are created with the user's group (gid 1000), while the system also has a `tty` group (gid 5). When OpenSSH's sshd opens a PTY, it calls `chown` to give the device to the `tty` group; as a non-root user it fails and drops the session. A terminal app shows `Connection to ... closed by remote host`, while `ssh -T` and one-off commands (`ssh host command`), which use no PTY, work.
 
-**The fix.** `lib/pty_chown_shim.c` is a tiny library that reports success for `chown` on paths under `/dev/pts/` and passes every other call to the real function. `install.sh` compiles it with the C compiler (`cc`) into `~/.tsnet/lib/pty_chown_shim.so`, and `tsnet start` and `install.sh` attach it with `LD_PRELOAD` when they run dots-tailscale's `start.sh`.
+**The fix.** `lib/pty_chown_shim.c` is a tiny library that reports success for `chown` on paths under `/dev/pts/` and passes every other call to the real function. `install.sh` compiles it with the C compiler (`cc`) into `/workspace/shared/.tsnet/lib/pty_chown_shim.so`, and `tsnet start` and `install.sh` attach it with `LD_PRELOAD` when they run dots-tailscale's `start.sh`.
 
 - It applies to the sshd listener and to the sshd session process started for each connection. sshd builds a fresh environment for login shells, so your shell does not inherit it.
 - tailscaled and the Python shim also see it in their environment, but they never `chown` `/dev/pts` paths, so nothing changes for them.
@@ -270,5 +280,5 @@ dots-tailscale's own files are not modified.
 - **Metadata is visible to the platform.** The platform can see connections to Tailscale's servers. Tailnet contents stay encrypted.
 - **Exit node availability.** If `{exit-node}` goes offline, downloads through the proxy fail until you switch exit nodes or turn the proxy off.
 - **One node identity per VM.** Do not run two Dots computers from the same state file, and never copy the backup folder to another machine.
-- **The cleanup rules are unknown.** The home directory survived the cleanup on 2026-10-23; there is no guarantee it always will. That is why the backup lives on the other side.
+- **The cleanup rules are unknown.** Dots uses `/workspace/shared` for data it keeps, but no official document promises that, and whole environments have gone back to older snapshots. That is why the backup lives on the other side, and why work products deserve a copy outside Dots.
 - **Shell programs only.** The local proxies affect programs started from a shell that loaded the dots-tsnet environment. The Dots browser, ChatGPT connectors and the Dots agent itself are not affected. A browser installed with tsapt and started from such a shell does use the proxy.

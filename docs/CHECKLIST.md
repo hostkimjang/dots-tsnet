@@ -1,13 +1,13 @@
 # 검증 체크리스트
 
-릴리스 전에 Dots 클라우드 컴퓨터에서 아래 항목을 확인합니다. 마지막 확인은 v0.1.2, 2026-10-23, Debian 13 (trixie) x86_64, dots-tailscale v0.4.0(Tailscale 1.102.4) 환경이고, exit node는 Windows 11(Tailscale 1.102.2)과 OPNsense(FreeBSD 14.3, Tailscale 1.92.2)입니다.
+릴리스 전에 Dots 클라우드 컴퓨터에서 아래 항목을 확인합니다. 마지막 확인은 v0.1.3, 2026-10-24, Debian 13 (trixie) x86_64, dots-tailscale v0.4.0(Tailscale 1.102.4) 환경이고, exit node는 Windows 11(Tailscale 1.102.2)과 OPNsense(FreeBSD 14.3, Tailscale 1.92.2)입니다.
 
 ## 오프라인 검사
 
 - [x] `bash -n`으로 셸 스크립트 문법 확인
 - [x] `python3 -m py_compile lib/bin/tsapt lib/setup_knobs.py`
-- [x] `python3 -m unittest discover -s tests` (Dots에서 37개 통과)
-- [x] GitHub Actions `checks` 통과 (d3be7bc)
+- [x] `python3 -m unittest discover -s tests` (Dots에서 38개 통과)
+- [ ] GitHub Actions `checks` 통과 (푸시한 뒤 확인)
 
 ## 설치
 
@@ -17,12 +17,13 @@
 - [x] 0.1.2를 받은 뒤 README의 복구 절차대로 `bash install.sh`: 실행 중인 tailscaled를 다시 띄우지 않고 그대로 쓰고, exit node와 `TS_` 환경변수 유지
 - [x] 기존 설치 위에 다시 설치해도 설정과 설치한 패키지가 유지됨 (0.1.0 → 0.1.1 → 0.1.2)
 - [x] `/workspace` 설치를 홈 폴더로 옮김: SSH에서 `--detach`로 분리 실행, 같은 기기 신원과 exit node 설정 유지, 패키지 446MB 복사, 실행 아이콘 두 개 경로 수정, 옛 위치 삭제 (2026-10-23 실제 Dots)
-- [x] 옮긴 뒤 dots-tailscale 파일 무결성 `match`, 백업이 `/workspace/.dots-tsnet-backup`에 권한 600으로 생김
+- [x] 홈 폴더(0.1.2) 설치를 `/workspace/shared`로 옮김: SSH에서 `--detach`로 분리 실행, 같은 기기 신원과 exit node 설정 유지, SSH 호스트 키 지문 그대로, 패키지 446MB 복사, 실행 아이콘 두 개 경로 수정, 옛 위치 삭제 (2026-10-23 밤 실제 Dots)
+- [x] 옮긴 뒤 dots-tailscale 파일 무결성 `match`, 백업이 `~/.local/state/dots-tsnet`(폴더 700, 파일 600)에 생기고 예전 백업 위치(`/workspace/.dots-tsnet-backup`)는 지워짐, `ssh -tt`로 `/dev/pts/6` 할당
 - [x] `uninstall.sh --keep-packages` 후 셸 연결, 프록시 변수, exit node가 정리되고 재설치로 복구됨 (0.1.1에서 확인)
 - [x] tailscaled 실제 재시작 후 프록시 listener 확인 (`dots-ts proxy apply` 절차, 약 3초)
 - [x] `TSNET_TAILSCALED_ENV=... bash install.sh`가 값을 `tsnet.conf`에 저장하고 기동 단계에 넘김
-- [ ] dots-tailscale이 없는 새 VM에서 처음부터 홈 폴더에 설치 (로그인 URL 승인 포함)
-- [ ] 정리 작업으로 설치 폴더가 지워진 뒤 0.1.2 `install.sh`가 백업에서 같은 신원으로 되돌림 (단위 테스트로만 확인. 2026-10-23 실제 사고 때는 0.1.1이라 새 기기로 등록)
+- [ ] dots-tailscale이 없는 새 VM에서 처음부터 `/workspace/shared`에 설치 (로그인 URL 승인 포함)
+- [ ] 설치 폴더가 지워진 뒤 `install.sh`가 백업에서 같은 신원으로 되돌림 (단위 테스트로만 확인. 예전 백업 위치에서 되돌리기 포함)
 
 ## tsnet
 
@@ -41,6 +42,7 @@
 
 - [x] 프록시를 거친 외부 IP가 exit node 기기의 공인 IP와 같음
 - [x] 홈 폴더로 옮긴 뒤 계속 돌던 Dots Chrome이 새 tailscaled의 HTTP 프록시(1056)로 다시 연결됨 (연결 13개, 프록시 경유 Google HTTP 200)
+- [x] `/workspace/shared`로 옮긴 뒤에도 계속 돌던 Dots Chrome이 새 tailscaled의 HTTP 프록시로 다시 연결됨 (연결 10개)
 - [x] 프록시 없이 직접 연결하면 실패함 (Dots 기본 정책)
 - [x] exit node를 Windows 11에서 OPNsense로 바꾸면 외부 IP도 OPNsense 공인 IP로 바뀌고 `apt-get update`, 7MB 다운로드가 정상 동작
 - [x] exit node 없이 tailnet 기기 접속: HTTP 프록시와 SOCKS5 모두 HTTP 200, `dots-ts cli nc`로 SSH 포트 연결, 인터넷 요청은 실패
@@ -71,13 +73,14 @@
 
 - [x] exit node 예시 이름을 `{exit-node}`(집 PC 또는 중계 서버) 자리표시로 통일, 저장소에 개인 기기 이름·IP 없음
 - [x] README, how-it-works, exit-node, tsapt 문서의 한국어·영어판이 같은 내용을 다룸
-- [x] 문서의 경로가 홈 폴더 설치 기준 (`~/.tsnet`, `~/.dots-tailscale`)
+- [x] 문서의 경로가 `/workspace/shared` 설치 기준 (`/workspace/shared/.tsnet`, `/workspace/shared/.dots-tailscale`)
+- [x] Dots 저장소 구조, scratch 정리 기록, 환경 복원 사례(openai/codex#52765), Google Drive를 마운트할 수 없는 근거(`/dev/fuse` 없음, capability 0, `NoNewPrivs=1`)가 문서에 있음
 - [x] GSO·GRO 문단이 측정값과 근거 링크를 담고, 측정하지 않은 단정이 없음
 
 ## 아직 확인하지 않은 것
 
-- [ ] VM 교체 후 `tsnet start`만으로 프록시까지 다시 열리는지 (홈 폴더가 남는 경우)
-- [ ] VM 교체로 홈 폴더가 초기화됐을 때 `/workspace/.dots-tsnet-backup`에서 되돌리기
+- [ ] VM 교체 후 `tsnet start`만으로 프록시까지 다시 열리는지 (`/workspace`가 남는 경우)
+- [ ] VM 교체나 스냅숏 복원 뒤 `/workspace/shared` 설치가 남는지, 지워졌다면 홈 폴더 백업에서 되돌리기
 - [ ] `dots-ts cli set --accept-routes`로 서브넷 경로 사용
 - [ ] Ubuntu 기반 이미지
 - [ ] arm64

@@ -13,8 +13,8 @@ tsapt: 시스템 패키지 1430개를 설치된 것으로 인식했습니다 (ts
       (treated 1430 system packages as already installed)
 
 $ apt-get install -y iperf3
-tsapt: 3개 패키지를 /home/agent/.tsnet/root 에 설치합니다: libsctp1 1.0.21+dfsg-1, libiperf0 3.18-2+deb13u2, iperf3 3.18-2+deb13u2
-      (installing 3 packages into /home/agent/.tsnet/root)
+tsapt: 3개 패키지를 /workspace/shared/.tsnet/root 에 설치합니다: libsctp1 1.0.21+dfsg-1, libiperf0 3.18-2+deb13u2, iperf3 3.18-2+deb13u2
+      (installing 3 packages into /workspace/shared/.tsnet/root)
 ...
 
 $ iperf3 --version
@@ -29,10 +29,10 @@ The user account on a Dots computer has no sudo, and system directories such as 
 
 ## How it works
 
-1. **A separate apt configuration.** tsapt runs the real `/usr/bin/apt-get` with `APT_CONFIG` pointing at `~/.tsnet/apt/apt.conf`. Package lists, install state, cache and logs all live under `~/.tsnet/apt`. On first run, the source list is generated from `/etc/os-release` using official mirrors (deb.debian.org for Debian, archive.ubuntu.com for Ubuntu).
+1. **A separate apt configuration.** tsapt runs the real `/usr/bin/apt-get` with `APT_CONFIG` pointing at `/workspace/shared/.tsnet/apt/apt.conf`. Package lists, install state, cache and logs all live under `/workspace/shared/.tsnet/apt`. On first run, the source list is generated from `/etc/os-release` using official mirrors (deb.debian.org for Debian, archive.ubuntu.com for Ubuntu).
 2. **Inferring what is already installed.** With no dpkg records, tsapt marks as installed every package that has a directory in `/usr/share/doc`, every required or Essential package, and everything those depend on. Dependency fields are copied as well, so apt neither re-downloads system packages nor counts them as upgradable.
 3. **Downloading only what is missing.** `apt-get install --download-only` fetches just the missing `.deb` files. Downloads go through tailscaled's HTTP proxy (`127.0.0.1:1056` by default) and out via `{exit-node}`.
-4. **Unpacking into your own directory.** `dpkg-deb -x` unpacks into `~/.tsnet/root`. Absolute symlinks inside packages are rewritten to point inside that directory. `update-alternatives --install` entries from install scripts (postinst) become symlinks when the system does not already have that path; that is how figlet's `/usr/bin/figlet` appears.
+4. **Unpacking into your own directory.** `dpkg-deb -x` unpacks into `/workspace/shared/.tsnet/root`. Absolute symlinks inside packages are rewritten to point inside that directory. `update-alternatives --install` entries from install scripts (postinst) become symlinks when the system does not already have that path; that is how figlet's `/usr/bin/figlet` appears.
 5. **Ready to run.** `env.sh` has already added that directory to `PATH`, `LD_LIBRARY_PATH` and `PYTHONPATH`, so programs work right after installation.
 
 ## Command reference
@@ -56,18 +56,18 @@ Commands that truly need a system dpkg install, such as `build-dep` and `satisfy
 ## Limits
 
 - **Install scripts are not run.** Maintainer scripts such as postinst are skipped. Packages that need a service daemon, new users or groups, setuid binaries, or configuration generated at install time may not work.
-- **Some programs look in fixed paths.** A program that looks for data in a fixed path such as `/usr/share/...` will not find files under `~/.tsnet/root`. figlet, for example, installs fine but looks for fonts in `/usr/share/figlet`, so running it plainly gives a font error. Use an option or environment variable that points to the data, such as `figlet -d ~/.tsnet/root/usr/share/figlet`.
+- **Some programs look in fixed paths.** A program that looks for data in a fixed path such as `/usr/share/...` will not find files under `/workspace/shared/.tsnet/root`. figlet, for example, installs fine but looks for fonts in `/usr/share/figlet`, so running it plainly gives a font error. Use an option or environment variable that points to the data, such as `figlet -d /workspace/shared/.tsnet/root/usr/share/figlet`.
 - **Check your Python version.** `python3-*` packages are built for the system `/usr/bin/python3`. If `python3` in your shell is a different interpreter, C extension modules may not load. In our environment, the Codex runtime's Python 3.12 came before the system Python 3.13 in the login shell's PATH. Use `/usr/bin/python3` directly, or install with pip.
 - **Library search order.** `LD_LIBRARY_PATH` is searched before system libraries. Since system libraries are never downloaded again, this is usually fine; if something misbehaves, try removing the most recently installed package.
-- **Downloaded files stay.** Downloaded `.deb` files remain in `~/.tsnet/apt/cache/archives`. `apt-get clean` removes them.
+- **Downloaded files stay.** Downloaded `.deb` files remain in `/workspace/shared/.tsnet/apt/cache/archives`. `apt-get clean` removes them.
 
 ## File locations
 
 | Path | Contents |
 |---|---|
-| `~/.tsnet/root` | Where packages are unpacked |
-| `~/.tsnet/apt/sources.list` | Repository list. Run `apt update` after editing |
-| `~/.tsnet/apt/state` | Package lists and the inferred install state |
-| `~/.tsnet/apt/user-status` | Packages installed by tsapt |
-| `~/.tsnet/apt/info/*.list` | Files installed by each package, used for removal |
-| `~/.tsnet/apt/cache/archives` | Downloaded `.deb` files |
+| `/workspace/shared/.tsnet/root` | Where packages are unpacked |
+| `/workspace/shared/.tsnet/apt/sources.list` | Repository list. Run `apt update` after editing |
+| `/workspace/shared/.tsnet/apt/state` | Package lists and the inferred install state |
+| `/workspace/shared/.tsnet/apt/user-status` | Packages installed by tsapt |
+| `/workspace/shared/.tsnet/apt/info/*.list` | Files installed by each package, used for removal |
+| `/workspace/shared/.tsnet/apt/cache/archives` | Downloaded `.deb` files |

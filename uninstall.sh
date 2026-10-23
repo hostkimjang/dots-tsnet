@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # dots-tsnet 제거 스크립트. dots-tailscale 설치와 Tailscale 로그인 상태는 그대로 둡니다.
 set -euo pipefail
-# 0.1.2 부터 기본 설치 위치는 홈 폴더입니다. 그 전 버전으로 /workspace 에 설치했다면 그쪽을 지웁니다.
+# 설치 위치를 찾습니다: /workspace/shared(0.1.3 부터 기본), 홈 폴더(0.1.2), /workspace(0.1.1 까지).
 if [ -z "${TSNET_DIR:-}" ]; then
-  TSNET_DIR="$HOME/.tsnet"
-  [ -x "$TSNET_DIR/bin/tsnet" ] || [ ! -x /workspace/.tsnet/bin/tsnet ] || TSNET_DIR=/workspace/.tsnet
+  for candidate in "${TSNET_SHARED_BASE:-/workspace/shared}/.tsnet" "$HOME/.tsnet" /workspace/.tsnet; do
+    if [ -x "$candidate/bin/tsnet" ]; then
+      TSNET_DIR="$candidate"
+      break
+    fi
+  done
+  : "${TSNET_DIR:=${TSNET_SHARED_BASE:-/workspace/shared}/.tsnet}"
 fi
 KEEP_PACKAGES=0
 case "${1:-}" in

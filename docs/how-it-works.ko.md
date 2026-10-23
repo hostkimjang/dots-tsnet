@@ -10,7 +10,7 @@
 - **tailnet에 접속하려면 exit node가 필요한가요?** 아닙니다. Dots로 SSH 접속하거나 Dots에서 내 다른 기기로 접속하는 데는 필요 없습니다. exit node는 Dots의 인터넷 다운로드를 내 네트워크로 내보내고 싶을 때만 필요합니다.
 - **직접 연결(P2P)인가요?** 아닙니다. Dots에서 나가는 UDP는 목적지 포트가 3478일 때만 통과하는 것으로 보이고, Tailscale 기기는 다른 포트에서 기다리기 때문에 직접 연결이 만들어지지 않습니다. 모든 트래픽이 Tailscale의 DERP 중계 서버를 거치고, 연결 하나당 속도는 수백 kB/s 수준입니다.
 - **실행 명령에 키가 들어가나요?** 아닙니다. 처음에 `tailscale up`으로 한 번 로그인하고(로그인 URL 또는 auth key 파일), 기기 신원은 상태 디렉터리에 저장됩니다.
-- **어디에 설치되나요?** 홈 폴더(`~/.dots-tailscale`, `~/.tsnet`)입니다. Dots의 정리 작업이 `/workspace` 최상위 폴더를 지운 일이 있어서입니다. 아래 [Dots 정리 작업과 설치 위치](#dots-정리-작업과-설치-위치)에 기록했습니다.
+- **어디에 설치되나요?** `/workspace/shared`(`.dots-tailscale`, `.tsnet`)입니다. Dots의 scratch 정리 작업이 `/workspace` 최상위 폴더를 지울 때도 남는 곳이고, Dots 데스크톱도 사용자 설정을 이곳에 보존합니다. 아래 [Dots 저장소와 설치 위치](#dots-저장소와-설치-위치)에 기록했습니다.
 
 ## Dots 터미널에서 닿는 곳
 
@@ -52,15 +52,15 @@ flowchart LR
 
 ## tailscaled 실행 명령
 
-dots-tailscale v0.4.0이 실행하는 명령에, 마지막 두 프록시 옵션을 dots-tsnet이 더한 것입니다. 경로는 기본 설치 위치(`/home/agent/.dots-tailscale`) 기준이고, 키는 들어 있지 않습니다.
+dots-tailscale v0.4.0이 실행하는 명령에, 마지막 두 프록시 옵션을 dots-tsnet이 더한 것입니다. 경로는 기본 설치 위치(`/workspace/shared/.dots-tailscale`) 기준이고, 키는 들어 있지 않습니다.
 
 ```bash
 HTTPS_PROXY=http://127.0.0.1:18089 \
 HTTP_PROXY=http://127.0.0.1:18089 \
-SSL_CERT_FILE=/home/agent/.dots-tailscale/shim/bundle.crt \
-/home/agent/.dots-tailscale/tailscaled \
+SSL_CERT_FILE=/workspace/shared/.dots-tailscale/shim/bundle.crt \
+/workspace/shared/.dots-tailscale/tailscaled \
   --tun=userspace-networking \
-  --statedir=/home/agent/.dots-tailscale/state \
+  --statedir=/workspace/shared/.dots-tailscale/state \
   --socket=/tmp/dots-tailscale-1000/tailscaled.sock \
   --port=0 \
   --socks5-server=127.0.0.1:1055 \
@@ -72,7 +72,7 @@ SSL_CERT_FILE=/home/agent/.dots-tailscale/shim/bundle.crt \
 - `HTTPS_PROXY`, `HTTP_PROXY`: tailscaled 자신의 HTTPS 연결(제어 서버, DERP, 로그)을 shim으로 보냅니다. 이 값은 tailscaled에만 들어가고 내 셸에는 들어가지 않습니다.
 - `SSL_CERT_FILE`: 시스템 CA 목록에 설치할 때 만든 작은 로컬 CA를 더한 파일입니다. shim이 이 로컬 CA로 서명한 인증서를 내밀기 때문에 tailscaled가 믿을 수 있어야 합니다.
 - `--tun=userspace-networking`: root도 `/dev/net/tun`도 없으므로 네트워크 스택을 프로세스 안에서 돌립니다.
-- `--statedir`: 기기 신원을 둡니다. dots-tsnet은 이 디렉터리를 홈 폴더에 두고, 상태 파일을 `/workspace/.dots-tsnet-backup`에도 복사해 둡니다. 이 디렉터리를 동시에 실행 중인 두 컴퓨터에 복사하면 안 됩니다.
+- `--statedir`: 기기 신원을 둡니다. dots-tsnet은 이 디렉터리를 `/workspace/shared` 아래에 두고, 상태 파일을 홈 폴더(`~/.local/state/dots-tsnet`)에도 복사해 둡니다. 이 디렉터리를 동시에 실행 중인 두 컴퓨터에 복사하면 안 됩니다.
 - `--socket`: 제어 소켓을 사용자별 실행 디렉터리에 둡니다(`1000`은 uid).
 - `--port=0`: tailscaled가 쓸 로컬 UDP 포트를 아무거나 고릅니다. Dots는 보내는 쪽 포트가 아니라 목적지 포트(3478)를 보고 통과시키는 것으로 보여서, 이 값을 바꿔도 직접 연결에는 도움이 되지 않습니다.
 - `--socks5-server`, `--outbound-http-proxy-listen`: 내 프로그램이 쓸 로컬 프록시입니다(루프백 전용). dots-tailscale 기본값은 꺼짐이고, dots-tsnet이 켭니다.
@@ -80,23 +80,23 @@ SSL_CERT_FILE=/home/agent/.dots-tailscale/shim/bundle.crt \
 나머지 두 프로세스는 이렇게 실행됩니다.
 
 ```bash
-UPSTREAM_HOST=browser-proxy UPSTREAM_PORT=8889 python3 /home/agent/.dots-tailscale/shim/shim.py
-/usr/sbin/sshd -f /home/agent/.dots-tailscale/sshd/sshd_config   # 127.0.0.1:22, 공개키 인증만
+UPSTREAM_HOST=browser-proxy UPSTREAM_PORT=8889 python3 /workspace/shared/.dots-tailscale/shim/shim.py
+/usr/sbin/sshd -f /workspace/shared/.dots-tailscale/sshd/sshd_config   # 127.0.0.1:22, 공개키 인증만
 ```
 
-`tsnet start`와 `install.sh`는 dots-tailscale의 `start.sh`를 실행할 때 `TSNET_TAILSCALED_ENV`의 `TS_` 값과 대화형 SSH 보정(`LD_PRELOAD=/home/agent/.tsnet/lib/pty_chown_shim.so`)을 함께 넘깁니다. 그래서 위 세 프로세스 모두 이 값들을 환경에 갖고 있습니다.
+`tsnet start`와 `install.sh`는 dots-tailscale의 `start.sh`를 실행할 때 `TSNET_TAILSCALED_ENV`의 `TS_` 값과 대화형 SSH 보정(`LD_PRELOAD=/workspace/shared/.tsnet/lib/pty_chown_shim.so`)을 함께 넘깁니다. 그래서 위 세 프로세스 모두 이 값들을 환경에 갖고 있습니다.
 
 로그인은 한 번만 하고, 키를 명령줄에 쓰는 일은 없습니다.
 
 ```bash
-bash ~/.dots-tailscale/start.sh login     # "tailscale up --hostname=dots-sandbox --ssh=false" 를 실행하고 로그인 URL 을 보여 줌
-DOTS_TS_AUTH_KEY_FILE=/절대/경로/key bash ~/.dots-tailscale/start.sh auth   # 또는 파일(권한 600)에서 auth key 를 읽음
+bash /workspace/shared/.dots-tailscale/start.sh login     # "tailscale up --hostname=dots-sandbox --ssh=false" 를 실행하고 로그인 URL 을 보여 줌
+DOTS_TS_AUTH_KEY_FILE=/절대/경로/key bash /workspace/shared/.dots-tailscale/start.sh auth   # 또는 파일(권한 600)에서 auth key 를 읽음
 ```
 
 내 Dots 컴퓨터에서 실제 명령과 환경변수를 보려면 이렇게 합니다.
 
 ```bash
-pid=$(pgrep -f "^$HOME/.dots-tailscale/tailscaled ")
+pid=$(pgrep -f "^/workspace/shared/.dots-tailscale/tailscaled ")
 tr '\0' ' ' < /proc/$pid/cmdline; echo
 tr '\0' '\n' < /proc/$pid/environ | grep -E '^(TS_|HTTPS?_PROXY|SSL_CERT_FILE|LD_PRELOAD)'
 ```
@@ -127,7 +127,7 @@ dots-tsnet은 shim을 고치지 않습니다. 코드는 [abruption/dots-tailscal
 
 exit node는 인터넷으로 나가는 길에만 관계합니다. Dots와 내 기기 사이의 통신에는 기본 dots-tailscale 구성과, 그 접속을 허용하는 tailnet 정책만 있으면 됩니다.
 
-**Dots로 들어오기.** tailnet의 아무 기기에서 `ssh agent@dots-sandbox`로 접속합니다. 공개키는 `~/.dots-tailscale/sshd/authorized_keys`에 있어야 합니다. userspace 모드의 tailscaled는 tailnet에서 들어온 연결을 로컬 서비스(여기서는 `127.0.0.1:22`)로 넘겨줍니다.
+**Dots로 들어오기.** tailnet의 아무 기기에서 `ssh agent@dots-sandbox`로 접속합니다. 공개키는 `/workspace/shared/.dots-tailscale/sshd/authorized_keys`에 있어야 합니다. userspace 모드의 tailscaled는 tailnet에서 들어온 연결을 로컬 서비스(여기서는 `127.0.0.1:22`)로 넘겨줍니다.
 
 **Dots에서 나가기.** TUN 장치가 없어서 `curl http://100.x.y.z`만으로는 아무 데도 가지 않습니다. 프로그램이 tailscaled를 거쳐야 합니다.
 
@@ -139,7 +139,7 @@ curl -x http://127.0.0.1:1056 http://{tailnet-host}:{port}/
 curl --socks5-hostname 127.0.0.1:1055 http://{tailnet-host}:{port}/
 
 # 일반 TCP. 예: 다른 tailnet 기기로 SSH
-ssh -F /dev/null -o ProxyCommand="$HOME/.dots-tailscale/dots-ts cli nc %h %p" {user}@{tailnet-host}
+ssh -F /dev/null -o ProxyCommand="/workspace/shared/.dots-tailscale/dots-ts cli nc %h %p" {user}@{tailnet-host}
 ```
 
 `{tailnet-host}`에는 기기 이름이나 `100.x.y.z` 주소를, `{port}`와 `{user}`에는 내 값을 넣습니다.
@@ -149,7 +149,7 @@ exit node를 끈 상태에서 시험했습니다. 두 프록시 모두에서 다
 알아 둘 점:
 
 - `-F /dev/null`은 Dots 이미지의 `/etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf` 권한을 OpenSSH가 거부하기 때문에 붙입니다.
-- 다른 기기가 광고하는 서브넷 경로는 기본으로 받지 않습니다(`RouteAll: false`). `~/.dots-tailscale/dots-ts cli set --accept-routes`로 켤 수 있을 것으로 보이지만 시험하지 않았습니다.
+- 다른 기기가 광고하는 서브넷 경로는 기본으로 받지 않습니다(`RouteAll: false`). `/workspace/shared/.dots-tailscale/dots-ts cli set --accept-routes`로 켤 수 있을 것으로 보이지만 시험하지 않았습니다.
 - tailnet 정책이 Dots 기기(기본 이름 `dots-sandbox`)에서 그 기기와 포트로의 접속을 허용해야 합니다.
 - 태그, grant, 응답 크기 제한까지 갖춘 신중한 예시는 dots-tailscale의 [비공개 HTTP API 연결 예시](https://github.com/abruption/dots-tailscale/blob/main/docs/private-http-api.ko.md)에 있습니다.
 
@@ -209,7 +209,7 @@ Linux에서 처리량이 이상하거나 오류가 보일 때 Tailscale의 UDP �
 
 **Dots에서도 의미가 생기는 경우.** 직접 UDP 경로가 생기면(위의 UDP 3478 방법이 통한다면) 이 설정이 실제 경로에 적용됩니다. 그때는 Tailscale 기본값으로 먼저 재 보고, 문제가 보일 때 끄는 것을 권합니다.
 
-**dots-tailscale 파일을 고치지 않고 끄는 방법.** `~/.tsnet/tsnet.conf`에 적습니다.
+**dots-tailscale 파일을 고치지 않고 끄는 방법.** `/workspace/shared/.tsnet/tsnet.conf`에 적습니다.
 
 ```text
 TSNET_TAILSCALED_ENV=TS_DEBUG_DISABLE_UDP_GSO=true TS_DEBUG_DISABLE_UDP_GRO=true
@@ -217,7 +217,7 @@ TSNET_TAILSCALED_ENV=TS_DEBUG_DISABLE_UDP_GSO=true TS_DEBUG_DISABLE_UDP_GRO=true
 
 `tsnet start`와 `install.sh`는 tailscaled를 새로 띄울 때마다(예: VM이 바뀐 뒤) 이 값을 붙입니다. `TS_이름=값` 형식만 받습니다.
 
-**지금 바로 적용하기.** tailscaled가 이미 떠 있으면 `tsnet start`는 그 프로세스를 그대로 씁니다. 새 값을 바로 적용하려면 `tsnet restart`를 실행합니다. SSH에서는 연결이 1~2분 끊기므로 `tsnet restart --detach`로 분리해서 실행하고, 다시 접속해 `tsnet status`와 `~/.tsnet/restart.log`를 확인합니다. `tsnet restart`는 이렇게 동작합니다.
+**지금 바로 적용하기.** tailscaled가 이미 떠 있으면 `tsnet start`는 그 프로세스를 그대로 씁니다. 새 값을 바로 적용하려면 `tsnet restart`를 실행합니다. SSH에서는 연결이 1~2분 끊기므로 `tsnet restart --detach`로 분리해서 실행하고, 다시 접속해 `tsnet status`와 `/workspace/shared/.tsnet/restart.log`를 확인합니다. `tsnet restart`는 이렇게 동작합니다.
 
 1. 이 설치의 tailscaled만 골라 멈춥니다.
 2. 프록시 포트가 풀릴 때까지 최대 90초 기다립니다. 방금 멈춘 데몬의 연결이 TIME_WAIT로 남아 있으면 dots-tailscale이 "occupied port"로 기동을 거부하기 때문입니다.
@@ -226,35 +226,45 @@ TSNET_TAILSCALED_ENV=TS_DEBUG_DISABLE_UDP_GSO=true TS_DEBUG_DISABLE_UDP_GRO=true
 
 **확인하는 방법.** `tsnet status`의 `[tailscaled]` 줄에 나오고, 앞의 실행 명령 절에 있는 `/proc` 명령으로도 볼 수 있습니다.
 
-**`setup.sh`를 직접 고쳤다면.** dots-tailscale은 자기 파일의 SHA-256 값을 갖고 있습니다. `~/.dots-tailscale/setup.sh`에 환경변수를 직접 넣으면 `dots-ts version`이 `source integrity: mismatch (modified_or_mixed)`를, `dots-ts doctor`가 `overall: unhealthy`를 보고하고, dots-tailscale의 업데이트 기능도 수정된 설치는 업데이트하지 않습니다. `tsnet doctor --fix`를 실행하면 직접 넣은 `TS_` 설정을 `tsnet.conf`의 `TSNET_TAILSCALED_ENV`로 옮기고, 설치 기록과 SHA-256이 같은 원본 `setup.sh`를 되살립니다. 고쳤던 파일은 `~/.tsnet/backup/`에 남기고, 실행 중인 tailscaled는 재시작하지 않습니다.
+**`setup.sh`를 직접 고쳤다면.** dots-tailscale은 자기 파일의 SHA-256 값을 갖고 있습니다. `/workspace/shared/.dots-tailscale/setup.sh`에 환경변수를 직접 넣으면 `dots-ts version`이 `source integrity: mismatch (modified_or_mixed)`를, `dots-ts doctor`가 `overall: unhealthy`를 보고하고, dots-tailscale의 업데이트 기능도 수정된 설치는 업데이트하지 않습니다. `tsnet doctor --fix`를 실행하면 직접 넣은 `TS_` 설정을 `tsnet.conf`의 `TSNET_TAILSCALED_ENV`로 옮기고, 설치 기록과 SHA-256이 같은 원본 `setup.sh`를 되살립니다. 고쳤던 파일은 `/workspace/shared/.tsnet/backup/`에 남기고, 실행 중인 tailscaled는 재시작하지 않습니다.
 
-## Dots 정리 작업과 설치 위치
+## Dots 저장소와 설치 위치
 
-dots-tsnet 0.1.1까지는 dots-tailscale의 기본값을 따라 `/workspace` 아래에 설치했습니다. 2026-10-23에 관찰한 일 때문에 0.1.2부터 홈 폴더에 설치합니다.
+dots-tsnet은 0.1.1까지 dots-tailscale의 기본값을 따라 `/workspace` 바로 아래에 설치했고, 0.1.2에서는 홈 폴더에 설치했습니다. Dots 저장소 구조를 더 살펴본 뒤 0.1.3부터 `/workspace/shared`에 설치합니다.
 
-**무슨 일이 있었나요.** 2026-10-23 06:49:37(한국 시각)에 Dots 쪽 정리 작업이 `/workspace` 최상위 폴더 여럿을 지웠습니다. VM은 전날 16:19부터 켜져 있었고 재부팅되지 않았습니다.
+**저장소 구조.** Dots 데스크톱과 터미널은 권한(capability)을 모두 뺀 bubblewrap 샌드박스 안에서 돕니다. `/workspace`와 홈 폴더는 같은 디스크(overlay)에서 연결한 폴더이고, 홈 폴더는 그 디스크의 `/home/agent/.local/share/orbit-native`를 `/home/agent`로 연결한 것입니다. 루트(`/`)와 `/tmp`는 메모리(tmpfs)라서 VM과 함께 사라집니다. `/workspace` 아래에는 Dots 작업 폴더(`scratch/<작업 ID>`)와 `shared`가 있고, Dots 문서는 작업 파일을 `/workspace/scratch/<작업 폴더>`에 두라고 안내합니다.
 
-- 같은 초에 `/workspace/.scratch-cleaning/92af8521d3e5`(내용은 `v1` 한 줄)와 `/workspace/shared/.orbit-os`가 만들어졌습니다. `/workspace/scratch/` 아래에도 같은 ID의 폴더가 있습니다.
+**무슨 일이 있었나요.** 2026-10-23 06:49:37(한국 시각)에 Dots의 scratch 정리 작업이 `/workspace` 최상위 폴더 여럿을 지웠습니다. VM은 전날 16:19부터 켜져 있었고 재부팅되지 않았습니다.
+
+- 같은 초에 `/workspace/.scratch-cleaning/92af8521d3e5`(내용은 `v1` 한 줄), `/workspace/shared`, `/workspace/shared/.orbit-os`가 만들어졌습니다. `92af8521d3e5`는 `/workspace/scratch/` 아래 Dots 작업 폴더의 이름과 같습니다.
 - 지워진 것: `/workspace/.tsnet`, `/workspace/.dots-tailscale`, `/workspace/dots-tsnet`(저장소 사본). 계속 돌던 Chrome의 실행 파일 경로가 `/workspace/.scratch-cleaning-<해시>-<번호>-<난수>/root/opt/google/chrome/chrome (deleted)`로 보였습니다. 폴더 이름을 바꾼 뒤 통째로 지운 것으로 보입니다.
-- 남은 것: 같은 곳의 `.deb` 파일(일반 파일), `scratch`, `shared`, 이미지에 원래 있던 `.agents`, `.codex`, `.git`, 그리고 홈 폴더 전체.
+- 남은 것: 같은 곳의 `.deb` 파일(일반 파일), `scratch`(10월 초부터 쌓인 작업 파일 포함), 이미지에 원래 있던 `.agents`, `.codex`, `.git`, 그리고 홈 폴더 전체.
 - 그 뒤: tailscaled, shim, sshd, Chrome은 지워진 파일을 붙든 채 계속 돌았습니다. 약 11시간 뒤 Chrome과 apt가 프록시 오류를 내기 시작했습니다(exit node를 거친 DNS 조회가 시간 초과되며 HTTP 500, IP로 바로 접속해도 시간 초과). 지워진 파일로는 새 연결에 필요한 것을 만들 수 없었던 것으로 보입니다.
 - Tailscale 상태 파일도 함께 지워져서 같은 기기 신원으로는 돌아갈 수 없었고, 새 기기로 다시 등록해야 했습니다.
 
-정리 작업이 무엇을 기준으로, 얼마나 자주 지우는지는 공개된 자료가 없어서 알 수 없습니다.
+**왜 `/workspace/shared`인가요.**
+
+- 정리 작업이 지우지 않고 오히려 새로 만든 폴더입니다.
+- Dots 데스크톱 설정 파일 `/etc/orbit-os/config.toml`에 "User overrides persist in /workspace/shared/.orbit-os/dock.toml"이라고 적혀 있고, 테마 데이터 폴더도 `/workspace/shared/.orbit-os/cache/xdg`로 지정돼 있습니다. Dots가 오래 남길 데이터를 이곳에 둡니다.
+- 홈 폴더도 이번 정리에서 남았지만, 안의 파일이 모두 VM이 켜진 2026-10-22 16:19 이후에 만들어졌습니다. 10월 초부터 쌓인 `/workspace/scratch`와 달리, VM이 바뀌어도 남는다는 흔적이 없습니다.
+
+정리 작업이 무엇을 기준으로, 얼마나 자주 지우는지는 공개된 자료가 없습니다. `/workspace/shared`를 보존한다는 공식 약속도 없습니다.
+
+**환경 전체가 되돌아가는 경우.** 정리 작업과 별개로, Dots 환경이 예전 스냅숏으로 돌아가 최근 작업이 사라지고 오래된 파일만 남았다는 보고가 여럿 있습니다([openai/codex#52765](https://github.com/openai/codex/issues/52765)). 이때는 `/workspace`와 홈 폴더가 함께 되돌아갈 수 있습니다. 보고한 사람들은 Dots 밖에 둔 백업(ChatGPT Library, Google Drive)으로 복구했습니다. Dots 샌드박스에는 `/dev/fuse`가 없고, 권한이 모두 0이며, 권한 상승도 막혀 있어서(`NoNewPrivs=1`) Google Drive를 마운트할 수 없습니다. 대신 이미지에 들어 있는 rclone으로 `rclone copy --update`를 주기적으로 실행하면, Drive에서는 아무것도 지우지 않고 Drive 쪽이 더 새 파일은 덮어쓰지 않는 백업을 만들 수 있습니다.
 
 **dots-tsnet이 대비하는 방법.**
 
-- **홈 폴더에 설치합니다.** dots-tailscale은 `~/.dots-tailscale`, dots-tsnet은 `~/.tsnet`(패키지 포함)에 둡니다.
-- **반대편에 백업합니다.** dots-tailscale은 환경이 바뀔 때 `/workspace`가 남는다고 보고 홈 폴더가 남는지는 장담하지 않습니다. 그래서 기기 신원(Tailscale 상태 파일), SSH 호스트 키, `authorized_keys`, `tsnet.conf`, 설치한 패키지 목록을 `/workspace/.dots-tsnet-backup`(권한 700, 파일 600)에 복사합니다. 새 셸, `tsnet start`, `tsnet status` 때 바뀐 파일만 복사하므로 정리 작업이 지워도 곧 다시 생깁니다. 백업에는 개인키가 있으니 다른 컴퓨터로 옮기면 안 됩니다.
+- **`/workspace/shared`에 설치합니다.** dots-tailscale은 `/workspace/shared/.dots-tailscale`, dots-tsnet은 `/workspace/shared/.tsnet`(패키지 포함)에 둡니다. `/workspace/shared`가 없으면 홈 폴더에 설치합니다.
+- **반대편에 백업합니다.** 기기 신원(Tailscale 상태 파일), SSH 호스트 키, `authorized_keys`, `tsnet.conf`, 설치한 패키지 목록을 홈 폴더의 `~/.local/state/dots-tsnet`(권한 700, 파일 600)에 복사합니다. 홈 폴더에 설치했다면 `/workspace/shared/.dots-tsnet-backup`에 둡니다. 새 셸, `tsnet start`, `tsnet status` 때 바뀐 파일만 복사합니다. 백업에는 개인키가 있으니 다른 컴퓨터로 옮기면 안 됩니다.
 - **지워진 파일로 도는 옛 프로세스를 정리합니다.** 실행 파일이 지워진(`(deleted)`) tailscaled가 있으면, `tsnet start`와 `install.sh`가 그 tailscaled와 같은 설치의 shim, sshd 리스너를 멈추고 그 데몬의 소켓을 지운 뒤 새로 띄웁니다. SSH 세션 안에서는 연결이 끊기므로 멈추지 않고 Dots 화면 터미널에서 실행하라고 안내합니다.
-- **다시 설치하면 백업에서 되돌립니다.** 빠진 dots-tailscale 파일은 같은 버전으로 다시 채우고, 기기 신원과 SSH 호스트 키와 설정은 백업에서 되돌립니다. 백업도 없으면 dots-tailscale처럼 멈추고, `--new-identity`를 줄 때만 새 기기로 로그인합니다.
-- **예전 설치를 옮깁니다.** `/workspace`에 설치돼 있으면 `install.sh`가 홈 폴더로 옮깁니다. 바이너리, SSH 키, 프록시 설정, 패키지를 복사하고, 옛 tailscaled·shim·sshd를 멈춘 뒤 상태 파일을 복사합니다. 그다음 포트가 풀리길 기다렸다가 새 위치에서 같은 신원으로 띄웁니다. 실패하면 `/workspace` 설치로 되돌리고, 성공하면 옛 위치를 지우고 바탕화면 실행 아이콘(`~/.local/share/applications/*.desktop`)의 경로도 고칩니다. 2026-10-23에 실제 Dots 컴퓨터에서 이 과정을 거쳐 같은 기기 이름과 exit node 설정 그대로 옮겨졌습니다.
+- **다시 설치하면 백업에서 되돌립니다.** 빠진 dots-tailscale 파일은 같은 버전으로 다시 채우고, 기기 신원과 SSH 호스트 키와 설정은 백업에서 되돌립니다. 지금 백업 위치에 없으면 예전 버전이 쓰던 백업 위치(`/workspace/.dots-tsnet-backup` 등)도 찾아봅니다. 백업이 아예 없으면 dots-tailscale처럼 멈추고, `--new-identity`를 줄 때만 새 기기로 로그인합니다.
+- **예전 설치를 옮깁니다.** 홈 폴더(0.1.2)나 `/workspace`(0.1.1 이하)에 설치돼 있으면 `install.sh`가 `/workspace/shared`로 옮깁니다. 바이너리, SSH 키, 프록시 설정, 패키지를 복사하고, 옛 tailscaled·shim·sshd를 멈춘 뒤 상태 파일을 복사합니다. 그다음 포트가 풀리길 기다렸다가 새 위치에서 같은 신원으로 띄웁니다. 실패하면 기존 설치로 되돌리고, 성공하면 옛 위치와 예전 백업 위치(`/workspace/.dots-tsnet-backup`)를 지우고 바탕화면 실행 아이콘(`~/.local/share/applications/*.desktop`)의 경로도 고칩니다. 실제 Dots 컴퓨터에서 2026-10-23 저녁에 `/workspace` → 홈 폴더, 같은 날 밤에 홈 폴더 → `/workspace/shared`로 옮겼고, 두 번 모두 같은 기기 이름과 exit node 설정이 유지됐습니다.
 
 ## 대화형 SSH(PTY) 보정
 
 **문제.** Dots 컴퓨터의 `/dev/pts`는 사용자 그룹(gid 1000)으로 만들어지고, 시스템에는 `tty` 그룹(gid 5)이 있습니다. OpenSSH의 sshd는 PTY를 열 때 그 장치를 `tty` 그룹으로 바꾸려고 `chown`을 부르는데, root가 아니라서 실패하고 접속을 끊습니다. 터미널 앱으로 접속하면 `Connection to ... closed by remote host`가 나오고, PTY를 쓰지 않는 `ssh -T`나 명령 실행(`ssh host 명령`)은 됩니다.
 
-**보정.** `lib/pty_chown_shim.c`는 `/dev/pts/` 아래 경로의 `chown`만 성공으로 돌려주고, 나머지 호출은 원래 함수로 넘기는 작은 라이브러리입니다. `install.sh`가 C 컴파일러(`cc`)로 `~/.tsnet/lib/pty_chown_shim.so`를 만들고, `tsnet start`와 `install.sh`가 dots-tailscale의 `start.sh`를 실행할 때 `LD_PRELOAD`로 붙입니다.
+**보정.** `lib/pty_chown_shim.c`는 `/dev/pts/` 아래 경로의 `chown`만 성공으로 돌려주고, 나머지 호출은 원래 함수로 넘기는 작은 라이브러리입니다. `install.sh`가 C 컴파일러(`cc`)로 `/workspace/shared/.tsnet/lib/pty_chown_shim.so`를 만들고, `tsnet start`와 `install.sh`가 dots-tailscale의 `start.sh`를 실행할 때 `LD_PRELOAD`로 붙입니다.
 
 - sshd 리스너와, 접속마다 새로 뜨는 sshd 세션 프로세스에 적용됩니다. sshd는 로그인한 셸의 환경을 새로 만들기 때문에 내 셸에는 넘어가지 않습니다.
 - tailscaled와 Python shim도 이 값을 환경에 갖게 되지만, `/dev/pts` 경로를 `chown`하지 않으므로 달라지는 것이 없습니다.
@@ -270,5 +280,5 @@ dots-tailscale 원본 파일은 고치지 않습니다.
 - **메타데이터는 플랫폼에 보입니다.** Tailscale 서버로 접속한다는 사실은 보이고, tailnet 내용은 암호화된 채로 지나갑니다.
 - **exit node가 켜져 있어야 합니다.** `{exit-node}`가 꺼지면 다른 exit node로 바꾸거나 프록시를 끌 때까지 프록시를 거친 다운로드가 실패합니다.
 - **VM 하나에 기기 신원 하나.** 같은 상태 파일로 Dots 컴퓨터 두 대를 동시에 돌리면 안 됩니다. 백업 폴더를 다른 컴퓨터로 복사하지 마세요.
-- **정리 작업의 규칙은 알 수 없습니다.** 홈 폴더는 2026-10-23의 정리에서 남았을 뿐, 앞으로도 남는다는 보장은 없습니다. 그래서 반대편에 백업을 둡니다.
+- **정리 작업의 규칙은 알 수 없습니다.** `/workspace/shared`는 Dots가 보존용으로 쓰는 곳이지만 이를 약속한 공식 문서는 없고, 환경 전체가 예전 스냅숏으로 돌아간 사례도 있습니다. 그래서 설치 반대편에 백업을 두고, 작업물은 Dots 밖에도 백업하라고 권합니다.
 - **셸에서 실행한 프로그램에만 적용됩니다.** 로컬 프록시는 dots-tsnet 환경을 불러온 셸에서 실행한 프로그램에 적용됩니다. Dots 브라우저, ChatGPT 커넥터, Dots 에이전트 자체의 네트워크는 바뀌지 않습니다. tsapt로 설치한 브라우저를 셸에서 띄우면 그 브라우저는 프록시를 씁니다.

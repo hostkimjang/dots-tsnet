@@ -8,13 +8,24 @@ REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 . "$REPO_DIR/lib/common.sh"
 
-# 기본 설치 위치는 홈 폴더입니다. 2026-10-23 Dots 정리 작업이 /workspace 최상위 폴더를 지웠을 때 홈 폴더는 남았습니다.
 : "${HOME:=$(cd ~ && pwd)}"
-TSNET_DIR="${TSNET_DIR:-$HOME/.tsnet}"
-DOTS_TS_DIR="${DOTS_TS_DIR:-$HOME/.dots-tailscale}"
-# 0.1.1 까지의 기본 설치 위치입니다. 여기에 설치가 있으면 홈 폴더로 옮깁니다.
-LEGACY_TSNET_DIR="${TSNET_LEGACY_DIR:-/workspace/.tsnet}"
-LEGACY_TS_DIR="${DOTS_TS_LEGACY_DIR:-/workspace/.dots-tailscale}"
+# 기본 설치 위치는 /workspace/shared 입니다(없으면 홈 폴더). Dots 의 scratch 정리 작업은 /workspace 최상위 폴더를
+# 지우면서 /workspace/shared 는 남겼고, Dots 데스크톱도 사용자 설정을 이곳에 보존합니다.
+INSTALL_BASE="$(tsnet_install_base)"
+TSNET_DIR="${TSNET_DIR:-$INSTALL_BASE/.tsnet}"
+DOTS_TS_DIR="${DOTS_TS_DIR:-$INSTALL_BASE/.dots-tailscale}"
+# 예전 기본 설치 위치(0.1.2: 홈 폴더, 0.1.1 까지: /workspace)에 설치가 있으면 새 위치로 옮깁니다.
+LEGACY_TS_DIR="${DOTS_TS_LEGACY_DIR:-}" LEGACY_TSNET_DIR="${TSNET_LEGACY_DIR:-}"
+if [ -z "$LEGACY_TS_DIR" ]; then
+  for pair in "$HOME/.dots-tailscale|$HOME/.tsnet" "/workspace/.dots-tailscale|/workspace/.tsnet"; do
+    [ "${pair%%|*}" != "$DOTS_TS_DIR" ] || continue
+    if [ -f "${pair%%|*}/installed" ]; then
+      LEGACY_TS_DIR="${pair%%|*}" LEGACY_TSNET_DIR="${pair#*|}"
+      break
+    fi
+  done
+fi
+[ -n "$LEGACY_TSNET_DIR" ] || LEGACY_TSNET_DIR="$(dirname -- "${LEGACY_TS_DIR:-/nonexistent/x}")/.tsnet"
 ORIG_ARGS=("$@")
 UPSTREAM_PROXY="${UPSTREAM_PROXY:-http://browser-proxy:8889}"
 LOCK="$REPO_DIR/upstream/dots-tailscale.lock"
@@ -129,10 +140,10 @@ case "$AUTH_KEY_LINE" in
   '' | ssh-* | ecdsa-* | sk-*) ;;
   *) die "--authorized-key 에는 'ssh-ed25519 AAAA...' 형식의 공개키 한 줄을 주세요." ;;
 esac
-# /workspace 에 설치돼 있으면(0.1.1 까지의 기본값) 홈 폴더로 옮깁니다. 같은 Tailscale 신원을 그대로 씁니다.
+# 예전 위치에 설치돼 있으면 새 위치로 옮깁니다. 같은 Tailscale 신원을 그대로 씁니다.
 MIGRATE=0 TSNET_DIR_EXISTED=0
 [ ! -e "$TSNET_DIR" ] || TSNET_DIR_EXISTED=1
-if [ "$CHECK_UPSTREAM_ONLY" = 0 ] && [ "$DOTS_TS_DIR" != "$LEGACY_TS_DIR" ] && [ ! -e "$DOTS_TS_DIR" ] &&
+if [ "$CHECK_UPSTREAM_ONLY" = 0 ] && [ -n "$LEGACY_TS_DIR" ] && [ "$DOTS_TS_DIR" != "$LEGACY_TS_DIR" ] && [ ! -e "$DOTS_TS_DIR" ] &&
   [ -f "$LEGACY_TS_DIR/installed" ] && [ -x "$LEGACY_TS_DIR/tailscaled" ] &&
   [ -s "$LEGACY_TS_DIR/state/tailscaled.state" ]; then
   MIGRATE=1
@@ -140,10 +151,10 @@ fi
 if [ "$MIGRATE" = 1 ] && tsnet_in_ssh; then
   if [ "$DETACH" = 0 ] && [ -t 0 ]; then
     answer=""
-    read -r -p "기존 /workspace 설치를 홈 폴더로 옮기려면 tailscaled 를 다시 띄워야 해서 SSH 가 1~2분 끊깁니다. 분리 실행할까요? [y/N] " answer || true
+    read -r -p "기존 설치($LEGACY_TS_DIR)를 $DOTS_TS_DIR 로 옮기려면 tailscaled 를 다시 띄워야 해서 SSH 가 1~2분 끊깁니다. 분리 실행할까요? [y/N] " answer || true
     case "$answer" in y | Y | yes | YES) DETACH=1 ;; esac
   fi
-  [ "$DETACH" = 1 ] || die "기존 /workspace 설치를 홈 폴더로 옮기려면 Dots 화면 터미널에서 실행하거나 --detach 를 붙이세요."
+  [ "$DETACH" = 1 ] || die "기존 설치($LEGACY_TS_DIR)를 새 위치로 옮기려면 Dots 화면 터미널에서 실행하거나 --detach 를 붙이세요."
   log="$HOME/dots-tsnet-install.log"
   : > "$log"
   setsid -f nohup env -u SSH_CONNECTION -u SSH_CLIENT -u SSH_TTY \
@@ -155,12 +166,11 @@ BACKUP_DIR="$(tsnet_backup_dir)"
 if [ "$MIGRATE" = 1 ] && [ -f "$LEGACY_TSNET_DIR/tsnet.conf" ] && [ ! -f "$TSNET_DIR/tsnet.conf" ]; then
   install -d -m 700 "$TSNET_DIR"
   install -m 600 "$LEGACY_TSNET_DIR/tsnet.conf" "$TSNET_DIR/tsnet.conf"
-elif [ "$CHECK_UPSTREAM_ONLY" = 0 ] && [ ! -f "$TSNET_DIR/tsnet.conf" ] && [ -s "$BACKUP_DIR/tsnet.conf" ] &&
-  [ ! -L "$BACKUP_DIR/tsnet.conf" ]; then
+elif [ "$CHECK_UPSTREAM_ONLY" = 0 ] && [ ! -f "$TSNET_DIR/tsnet.conf" ] && conf_backup="$(tsnet_backup_find tsnet.conf)"; then
   # 설치 폴더가 지워졌으면 백업의 tsnet.conf(exit node, TSNET_TAILSCALED_ENV 등)를 먼저 되돌립니다.
   install -d -m 700 "$TSNET_DIR"
-  install -m 600 "$BACKUP_DIR/tsnet.conf" "$TSNET_DIR/tsnet.conf"
-  echo "백업에서 tsnet.conf 를 되돌렸습니다: $BACKUP_DIR/tsnet.conf"
+  install -m 600 "$conf_backup" "$TSNET_DIR/tsnet.conf"
+  echo "백업에서 tsnet.conf 를 되돌렸습니다: $conf_backup"
 fi
 TS_ENV_VALUE="${TSNET_TAILSCALED_ENV-$(tsnet_conf_get "$TSNET_DIR/tsnet.conf" TSNET_TAILSCALED_ENV)}"
 tsnet_tailscaled_env "$TS_ENV_VALUE" || exit 2
@@ -174,14 +184,14 @@ if [ "$CHECK_UPSTREAM_ONLY" = 1 ]; then
   exit 0
 fi
 
-# 옮기다가 홈 폴더에서 띄우지 못하면 /workspace 의 기존 설치로 되돌립니다.
+# 옮기다가 새 위치에서 띄우지 못하면 기존 설치로 되돌립니다.
 tsnet_preload_args
 start_env() {
   env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u no_proxy -u NO_PROXY \
     ${TSNET_PRELOAD_ARGS[@]+"${TSNET_PRELOAD_ARGS[@]}"} "${TSNET_TS_ENV_ARGS[@]}" "$@"
 }
 migrate_rollback() {
-  echo "install: 홈 폴더에서 Tailscale 을 띄우지 못해 /workspace 의 기존 설치로 되돌립니다." >&2
+  echo "install: 새 위치에서 Tailscale 을 띄우지 못해 기존 설치($LEGACY_TS_DIR)로 되돌립니다." >&2
   tsnet_stop_listed "$(tsnet_install_processes "$DOTS_TS_DIR")"
   tsnet_wait_ports 90 "$WAIT_SOCKS" "$WAIT_HTTP" || true
   start_env bash "$LEGACY_TS_DIR/start.sh" ||
@@ -190,8 +200,8 @@ migrate_rollback() {
   [ "$TSNET_DIR_EXISTED" = 1 ] || rm -rf -- "$TSNET_DIR"
 }
 if [ "$MIGRATE" = 1 ]; then
-  step "/workspace 설치를 홈 폴더로 옮기기"
-  echo "Dots 정리 작업이 /workspace 최상위 폴더를 지울 수 있어서 옮깁니다."
+  step "기존 설치를 새 위치로 옮기기"
+  echo "Dots 저장소 정리가 지우지 않는 곳으로 옮깁니다 (docs/how-it-works.ko.md 의 'Dots 저장소와 설치 위치')."
   echo "  $LEGACY_TS_DIR → $DOTS_TS_DIR"
   echo "  $LEGACY_TSNET_DIR → $TSNET_DIR"
   install -d -m 700 "$DOTS_TS_DIR" "$DOTS_TS_DIR/state" "$DOTS_TS_DIR/sshd"
@@ -209,7 +219,7 @@ if [ "$MIGRATE" = 1 ]; then
   fi
   WAIT_SOCKS="$(tsnet_conf_get "$TSNET_DIR/tsnet.conf" TSNET_SOCKS_PORT)" WAIT_SOCKS="${WAIT_SOCKS:-1055}"
   WAIT_HTTP="$(tsnet_conf_get "$TSNET_DIR/tsnet.conf" TSNET_HTTP_PORT)" WAIT_HTTP="${WAIT_HTTP:-1056}"
-  echo "/workspace 의 tailscaled, shim, sshd 를 멈추고 같은 Tailscale 신원으로 홈 폴더에서 다시 띄웁니다."
+  echo "기존 위치의 tailscaled, shim, sshd 를 멈추고 같은 Tailscale 신원으로 새 위치에서 다시 띄웁니다."
   tsnet_stop_listed "$(tsnet_install_processes "$LEGACY_TS_DIR")"
   # 멈춘 뒤에 복사해야 데몬이 마지막으로 저장한 상태가 들어갑니다.
   cp -a -- "$LEGACY_TS_DIR/state/." "$DOTS_TS_DIR/state/"
@@ -278,7 +288,7 @@ start_dots_ts || rc=$?
 if [ "$MIGRATE" = 1 ] && [ "$rc" != 0 ]; then
   # 옮긴 상태로 로그인이 다시 필요하다면 신원을 잘못 옮긴 것이므로, 새로 로그인하지 않고 되돌립니다.
   migrate_rollback
-  die "홈 폴더로 옮기지 못했습니다 (종료 코드 $rc). /workspace 의 기존 설치로 되돌렸습니다."
+  die "새 위치로 옮기지 못했습니다 (종료 코드 $rc). 기존 설치($LEGACY_TS_DIR)로 되돌렸습니다."
 fi
 if [ "$rc" = 10 ]; then
   [ "$DO_LOGIN" = 1 ] || die "Tailscale 로그인이 필요합니다: bash $DOTS_TS_DIR/start.sh login"
@@ -319,9 +329,9 @@ tsnet_defaults
 echo "설정 파일: $CONF"
 tsnet_backup_identity
 echo "백업: $BACKUP_DIR (Tailscale 신원, SSH 호스트 키, tsnet.conf. 다른 컴퓨터로 옮기지 마세요)"
-if [ ! -s "$TSNET_DIR/apt/user-status" ] && [ -s "$BACKUP_DIR/packages.txt" ]; then
-  echo "이전에 tsapt 로 설치했던 패키지 $(wc -l < "$BACKUP_DIR/packages.txt")개는 설치 폴더와 함께 지워졌습니다. 다시 설치하려면:"
-  echo "  apt-get update && apt-get install -y \$(cat $BACKUP_DIR/packages.txt)"
+if [ ! -s "$TSNET_DIR/apt/user-status" ] && pkg_list="$(tsnet_backup_find packages.txt)"; then
+  echo "이전에 tsapt 로 설치했던 패키지 $(wc -l < "$pkg_list")개는 설치 폴더와 함께 지워졌습니다. 다시 설치하려면:"
+  echo "  apt-get update && apt-get install -y \$(cat $pkg_list)"
 fi
 
 if [ "$DO_HOOK" = 1 ]; then
@@ -362,6 +372,13 @@ if [ "$MIGRATE" = 1 ]; then
   done
   rm -rf -- "$LEGACY_TS_DIR"
   echo "옛 dots-tailscale 설치($LEGACY_TS_DIR)를 지웠습니다. Tailscale 신원은 $DOTS_TS_DIR 와 백업에 있습니다."
+  # 0.1.2 의 백업 위치(/workspace 최상위)는 정리 작업이 지우는 자리라서, 새 백업이 생겼으면 지웁니다.
+  old_backup=/workspace/.dots-tsnet-backup
+  if [ "$old_backup" != "$BACKUP_DIR" ] && [ -d "$old_backup" ] && [ ! -L "$old_backup" ] && [ -O "$old_backup" ] &&
+    [ -s "$BACKUP_DIR/tailscaled.state" ]; then
+    rm -rf -- "$old_backup"
+    echo "예전 백업 위치($old_backup)를 지웠습니다. 새 백업: $BACKUP_DIR"
+  fi
   if [ -d "$LEGACY_TSNET_DIR" ]; then
     in_use=""
     for p in /proc/[0-9]*/exe; do
